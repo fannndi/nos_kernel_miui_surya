@@ -1208,7 +1208,7 @@ static int wcd9xxx_slim_get_laddr(struct slim_device *sb,
 				  const u8 *e_addr, u8 e_len, u8 *laddr)
 {
 	int ret;
-	const unsigned long timeout = jiffies +
+	unsigned long timeout = jiffies +
 				      msecs_to_jiffies(SLIMBUS_PRESENT_TIMEOUT);
 
 	do {
@@ -1217,7 +1217,7 @@ static int wcd9xxx_slim_get_laddr(struct slim_device *sb,
 			break;
 		/* Give SLIMBUS time to report present and be ready. */
 		usleep_range(1000, 1100);
-		pr_debug_ratelimited("%s: retyring get logical addr\n",
+		pr_debug_ratelimited("%s: retrying get logical addr\n",
 				     __func__);
 	} while time_before(jiffies, timeout);
 
