@@ -1127,6 +1127,7 @@ static void sym_check_print_recursive(struct symbol *last_sym)
 	for (stack = check_top; stack != NULL; stack = stack->prev)
 		if (stack->sym == last_sym)
 			break;
+
 	if (!stack) {
 		fprintf(stderr, "unexpected recursive dependency error\n");
 		return;
@@ -1147,11 +1148,14 @@ static void sym_check_print_recursive(struct symbol *last_sym)
 					break;
 			}
 		}
-		if (stack->sym == last_sym)
+
+		if (stack->sym == last_sym) {
 			fprintf(stderr, "%s:%d:error: recursive dependency detected!\n",
 				prop->file->name, prop->lineno);
 			fprintf(stderr, "For a resolution refer to Documentation/kbuild/kconfig-language.txt\n");
 			fprintf(stderr, "subsection \"Kconfig recursive dependency limitations\"\n");
+		}
+
 		if (stack->expr) {
 			fprintf(stderr, "%s:%d:\tsymbol %s %s value contains %s\n",
 				prop->file->name, prop->lineno,
@@ -1184,7 +1188,6 @@ static void sym_check_print_recursive(struct symbol *last_sym)
 	if (check_top == &cv_stack)
 		dep_stack_remove();
 }
-
 static struct symbol *sym_check_expr_deps(struct expr *e)
 {
 	struct symbol *sym;
