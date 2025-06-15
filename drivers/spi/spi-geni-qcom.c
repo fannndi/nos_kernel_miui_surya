@@ -1396,10 +1396,7 @@ err_gsi_geni_transfer_one:
 	mutex_unlock(&mas->spi_ssr.ssr_lock);
 	return ret;
 err_fifo_geni_transfer_one:
-	if (!spi->slave)
-		handle_fifo_timeout(mas, xfer);
-	if (spi->slave)
-		geni_se_dump_dbg_regs(&mas->spi_rsc, mas->base, mas->ipc);
+	handle_fifo_timeout(spi, xfer);
 err_ssr_transfer_one:
 	mutex_unlock(&mas->spi_ssr.ssr_lock);
 	return ret;
@@ -1649,8 +1646,6 @@ static int spi_geni_probe(struct platform_device *pdev)
 	}
 	geni_mas->wrapper_dev = &wrapper_pdev->dev;
 	geni_mas->spi_rsc.wrapper_dev = &wrapper_pdev->dev;
-	rsc->rsc_ssr.ssr_enable = of_property_read_bool(pdev->dev.of_node,
-			"ssr-enable");
 	ret = geni_se_resources_init(rsc, SPI_CORE2X_VOTE,
 				     (DEFAULT_SE_CLK * DEFAULT_BUS_WIDTH));
 	if (ret) {
@@ -1864,6 +1859,7 @@ static int spi_geni_runtime_resume(struct device *dev)
 		return -EAGAIN;
 	}
 
+	if (geni_mas->gsi_mode) {
 		ret = se_geni_clks_on(&geni_mas->spi_rsc);
 		if (ret)
 			GENI_SE_ERR(geni_mas->ipc, false, NULL,
