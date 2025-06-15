@@ -736,11 +736,6 @@ enum ipa_coalesce_event {
 #define IPA_COALESCE_EVENT_MAX IPA_COALESCE_EVENT_MAX
 };
 
-enum ipa_peripheral_event {
-	IPA_PERIPHERAL_CONNECT = ECM_CONNECT,
-	IPA_PERIPHERAL_DISCONNECT = ECM_DISCONNECT
-};
-
 #define WIGIG_CLIENT_CONNECT (IPA_COALESCE_EVENT_MAX)
 
 enum ipa_peripheral_event {
