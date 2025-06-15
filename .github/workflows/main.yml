@@ -37,10 +37,10 @@ jobs:
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             python3 ccache git-lfs lzop
 
-      - name: Download AOSP Clang (Google Clang r437112)
+      - name: Download AOSP Clang (Android 13 - r450784d)
         run: |
           mkdir clang
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-12.0.0_r32/clang-r437112.tar.gz -O clang.tar.gz
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-13.0.0_r3/clang-r450784d.tar.gz -O clang.tar.gz
           tar -xf clang.tar.gz -C clang
           rm clang.tar.gz
 
@@ -183,7 +183,7 @@ jobs:
         if: success()
         run: |
           curl -F document=@${{ env.ZIP_NAME }} \
-            -F caption="✅ Build Success\nUsing: *Google Clang r437112*\nTime: \`${{ env.BUILD_TIME }}\`" \
+            -F caption="✅ Build Success\nUsing: *Google Clang r450784d*\nTime: \`${{ env.BUILD_TIME }}\`" \
             -F parse_mode=Markdown \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument?chat_id=${TELEGRAM_CHAT_ID}"
 
