@@ -1936,9 +1936,7 @@ static int usf_set_rx_info32(struct usf_type *usf, unsigned long arg)
 {
 	struct us_rx_info_type32 config_rx32;
 	struct us_rx_info_type config_rx;
-	
-	memset(&config_rx32, 0, sizeof(config_rx32));
-	
+
 	int rc = copy_from_user(&config_rx32,
 				(struct us_rx_info_type32 __user *) arg,
 				sizeof(config_rx32));
