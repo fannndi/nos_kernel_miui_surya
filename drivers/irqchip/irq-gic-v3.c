@@ -473,7 +473,7 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
 
 		pr_warn("%s: %d triggered %s\n", __func__, irq, name);
 //2020.04.27 add longcheer fengxingqiang "recording wakeup reason"
-		log_wakeup_reason(irq);
+		log_irq_wakeup_reason(irq);
 	}
 }
 
