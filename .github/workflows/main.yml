@@ -37,21 +37,22 @@ jobs:
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             python3 ccache git-lfs lzop
 
-      - name: Clone ZyC Clang
+      - name: Download AOSP Clang (Google Clang r437112)
         run: |
-          mkdir zyc-clang
-          wget "$(curl -s https://raw.githubusercontent.com/ZyCromerZ/Clang/main/Clang-main-link.txt)" -O zyc-clang.tar.gz
-          tar -C zyc-clang/ -xf zyc-clang.tar.gz && rm -f zyc-clang.tar.gz
+          mkdir clang
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-12.0.0_r32/clang-r437112.tar.gz -O clang.tar.gz
+          tar -xf clang.tar.gz -C clang
+          rm clang.tar.gz
 
       - name: Get Clang Version
         id: clang
-        run: echo "version=$(./zyc-clang/bin/clang --version | head -n 1)" >> $GITHUB_OUTPUT
+        run: echo "version=$(./clang/bin/clang --version | head -n 1)" >> $GITHUB_OUTPUT
 
       - name: Set Environment Variables
         run: |
           echo "KERNEL_DEFCONFIG=surya_defconfig" >> $GITHUB_ENV
-          echo "TOOLCHAIN=${GITHUB_WORKSPACE}/zyc-clang" >> $GITHUB_ENV
-          echo "PATH=${GITHUB_WORKSPACE}/zyc-clang/bin:$PATH" >> $GITHUB_ENV
+          echo "TOOLCHAIN=${GITHUB_WORKSPACE}/clang" >> $GITHUB_ENV
+          echo "PATH=${GITHUB_WORKSPACE}/clang/bin:$PATH" >> $GITHUB_ENV
           echo "BUILD_USER=fannndi" >> $GITHUB_ENV
           echo "BUILD_HOST=android-build" >> $GITHUB_ENV
           echo "ZIP_NAME=NOS-PERF-${{ env.BUILD_TIME }}.zip" >> $GITHUB_ENV
@@ -182,7 +183,7 @@ jobs:
         if: success()
         run: |
           curl -F document=@${{ env.ZIP_NAME }} \
-            -F caption="✅ Build Success\nUsing: *ZyC-Clang*\nTime: \`${{ env.BUILD_TIME }}\`" \
+            -F caption="✅ Build Success\nUsing: *Google Clang r437112*\nTime: \`${{ env.BUILD_TIME }}\`" \
             -F parse_mode=Markdown \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument?chat_id=${TELEGRAM_CHAT_ID}"
 
