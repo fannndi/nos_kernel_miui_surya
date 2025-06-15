@@ -37,12 +37,12 @@ jobs:
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             python3 ccache git-lfs lzop
 
-      - name: Download AOSP Clang (Android 13 - r450784d)
-        run: |
-          mkdir clang
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-13.0.0_r3/clang-r450784d.tar.gz -O clang.tar.gz
-          tar -xf clang.tar.gz -C clang
-          rm clang.tar.gz
+      - name: Download AOSP Clang (Google Clang r510928)
+  run: |
+    mkdir clang
+    wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-15.0.0_r1/clang-r510928.tar.gz -O clang.tar.gz
+    tar -xf clang.tar.gz -C clang
+    rm clang.tar.gz
 
       - name: Get Clang Version
         id: clang
