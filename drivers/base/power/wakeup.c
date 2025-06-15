@@ -989,7 +989,7 @@ void pm_system_irq_wakeup(unsigned int irq_number)
 			pr_warn("%s: %d triggered %s\n", __func__,
 					irq_number, name);
 //2020.04.27 add longcheer fengxingqiang "recording wakeup reason"
-			log_wakeup_reason(irq_number);
+			log_irq_wakeup_reason(irq_number);
 
 		}
 		pm_wakeup_irq = irq_number;
