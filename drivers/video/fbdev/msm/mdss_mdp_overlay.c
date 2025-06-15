@@ -26,9 +26,11 @@
 #include <linux/memblock.h>
 #include <linux/sort.h>
 #include <linux/kmemleak.h>
+#include <linux/kthread.h>
 #include <linux/sched.h>
 #include <uapi/linux/sched/types.h>
 #include <linux/sched/clock.h>
+#include <asm/div64.h>
 
 #include <soc/qcom/event_timer.h>
 #include <linux/msm-bus.h>
@@ -956,6 +958,13 @@ int mdss_mdp_overlay_pipe_setup(struct msm_fb_data_type *mfd,
 		pipe->dst.x += mixer->ctl->border_x_off;
 		pipe->dst.y += mixer->ctl->border_y_off;
 	}
+
+	if (mfd->panel_orientation & MDP_FLIP_LR)
+		pipe->dst.x = pipe->mixer_left->width
+			- pipe->dst.x - pipe->dst.w;
+	if (mfd->panel_orientation & MDP_FLIP_UD)
+		pipe->dst.y = pipe->mixer_left->height
+			- pipe->dst.y - pipe->dst.h;
 
 	pipe->horz_deci = req->horz_deci;
 	pipe->vert_deci = req->vert_deci;
@@ -1993,7 +2002,8 @@ int mdss_mode_switch_post(struct msm_fb_data_type *mfd, u32 mode)
 		 * DCS to panel.
 		 */
 		frame_rate = mdss_panel_get_framerate
-			(&(ctl->panel_data->panel_info));
+			(&(ctl->panel_data->panel_info),
+			FPS_RESOLUTION_HZ);
 		if (!(frame_rate >= 24 && frame_rate <= 240))
 			frame_rate = 24;
 		frame_rate = ((1000/frame_rate) + 1);
@@ -2259,31 +2269,12 @@ static void __validate_and_set_roi(struct msm_fb_data_type *mfd,
 	}
 
 	list_for_each_entry(pipe, &mdp5_data->pipes_used, list) {
-		/*
-		 * Restore the pipe src/dst ROI if it was altered
-		 * in the previous kickoff.
-		 */
-		if (pipe->restore_roi)
-			__restore_pipe(pipe);
-
-		pr_debug("pipe:%d src:{%d,%d,%d,%d} dst:{%d,%d,%d,%d}\n",
-			pipe->num, pipe->src.x, pipe->src.y,
-			pipe->src.w, pipe->src.h, pipe->dst.x,
-			pipe->dst.y, pipe->dst.w, pipe->dst.h);
-
-		if (dual_roi->enabled) {
-			if (__adjust_pipe_rect(pipe, dual_roi)) {
-				skip_partial_update = true;
-				break;
-			}
-		}
-
 		if (!__is_roi_valid(pipe, &l_roi, &r_roi)) {
 			skip_partial_update = true;
-			pr_err("error. invalid pu config for pipe:%d dst:{%d,%d,%d,%d} dual_pu_roi:%d\n",
-				pipe->num, pipe->dst.x, pipe->dst.y,
-				pipe->dst.w, pipe->dst.h,
-				dual_roi->enabled);
+			pr_err("error. invalid pu config for pipe%d: %d,%d,%d,%d\n",
+				pipe->num,
+				pipe->dst.x, pipe->dst.y,
+				pipe->dst.w, pipe->dst.h);
 			break;
 		}
 	}
@@ -2298,69 +2289,845 @@ set_roi:
 					ctl->mixer_right->width,
 					ctl->mixer_right->height};
 		}
-
-		if (pinfo->partial_update_enabled == PU_DUAL_ROI) {
-			if (dual_roi->enabled) {
-			/* we failed pu validation, restore pipes */
-				list_for_each_entry(pipe,
-					&mdp5_data->pipes_used, list)
-					__restore_pipe(pipe);
-			}
-			dual_roi->enabled = false;
-		}
-
-		if (pinfo->partial_update_enabled)
-			__restore_dest_scaler_roi(ctl);
 	}
 
-	pr_debug("after processing: %s l_roi:-> %d %d %d %d r_roi:-> %d %d %d %d, dual_pu_roi:%d\n",
+	pr_debug("after processing: %s l_roi:-> %d %d %d %d r_roi:-> %d %d %d %d\n",
 		(l_roi.w && l_roi.h && r_roi.w && r_roi.h) ? "left+right" :
 			((l_roi.w && l_roi.h) ? "left-only" : "right-only"),
 		l_roi.x, l_roi.y, l_roi.w, l_roi.h,
-		r_roi.x, r_roi.y, r_roi.w, r_roi.h,
-		dual_roi->enabled);
+		r_roi.x, r_roi.y, r_roi.w, r_roi.h);
 
 	mdss_mdp_set_roi(ctl, &l_roi, &r_roi);
 }
 
-/*
- * For the pipe which is being used for Secure Display,
- * cleanup the previously queued buffers.
- */
-static void __overlay_cleanup_secure_pipe(struct msm_fb_data_type *mfd)
+static bool __is_supported_candence(int cadence)
 {
-	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(mfd);
-	struct mdss_mdp_pipe *pipe;
-	struct mdss_mdp_data *buf, *tmpbuf;
+	return (cadence == FRC_CADENCE_22) ||
+		(cadence == FRC_CADENCE_23) ||
+		(cadence == FRC_CADENCE_23223);
+}
 
-	list_for_each_entry(pipe, &mdp5_data->pipes_used, list) {
-		if (pipe->flags & MDP_SECURE_DISPLAY_OVERLAY_SESSION) {
-			list_for_each_entry_safe(buf, tmpbuf, &pipe->buf_queue,
-							pipe_list) {
-				if (buf->state == MDP_BUF_STATE_ACTIVE) {
-					__pipe_buf_mark_cleanup(mfd, buf);
-					list_move(&buf->buf_list,
-						&mdp5_data->bufs_freelist);
-					mdss_mdp_overlay_buf_free(mfd, buf);
-				}
-			}
+/* compute how many vsyncs between these 2 timestamp */
+static int __compute_vsync_diff(s64 cur_ts,
+	s64 base_ts, int display_fp1000s)
+{
+	int vsync_diff;
+	int round_up = 0;
+	u64 ts_diff = (cur_ts - base_ts) * display_fp1000s;
+
+	do_div(ts_diff, 1000000);
+	vsync_diff = (int)ts_diff;
+	/*
+	 * In most case DIV_ROUND_UP_ULL is enough, but calculation might be
+	 * impacted by possible jitter when vsync_diff is close to boundaries.
+	 * E.g., we have 30fps like 12.0->13.998->15.999->18.0->19.998->21.999
+	 * and 7460.001->7462.002->7464.0->7466.001->7468.002. DIV_ROUND_UP_ULL
+	 * fails in the later case.
+	 */
+	round_up = ((vsync_diff % 1000) >= 900) ? 1 : 0;
+	/* round up vsync count to accommodate fractions: base & diff */
+	vsync_diff = (vsync_diff / 1000) + round_up + 1;
+	return vsync_diff;
+}
+
+static bool __validate_frc_info(struct mdss_mdp_frc_info *frc_info)
+{
+	struct mdss_mdp_frc_data *cur_frc = &frc_info->cur_frc;
+	struct mdss_mdp_frc_data *last_frc = &frc_info->last_frc;
+	struct mdss_mdp_frc_data *base_frc = &frc_info->base_frc;
+
+	pr_debug("frc: cur_fcnt=%d, cur_ts=%lld, last_fcnt=%d, last_ts=%lld, base_fcnt=%d, base_ts=%lld last_v_cnt=%d, last_repeat=%d base_v_cnt=%d\n",
+		cur_frc->frame_cnt, cur_frc->timestamp,
+		last_frc->frame_cnt, last_frc->timestamp,
+		base_frc->frame_cnt, base_frc->timestamp,
+		frc_info->last_vsync_cnt, frc_info->last_repeat,
+		frc_info->base_vsync_cnt);
+
+	if ((cur_frc->frame_cnt == last_frc->frame_cnt) &&
+			(cur_frc->timestamp == last_frc->timestamp)) {
+		/* ignore repeated frame: video w/ UI layers */
+		pr_debug("repeated frame input\n");
+		return false;
+	}
+
+	return true;
+}
+
+static void __init_cadence_calc(struct mdss_mdp_frc_cadence_calc *calc)
+{
+	memset(calc, 0, sizeof(struct mdss_mdp_frc_cadence_calc));
+}
+
+static int __calculate_cadence_id(struct mdss_mdp_frc_info *frc_info, int cnt)
+{
+	struct mdss_mdp_frc_cadence_calc *calc = &frc_info->calc;
+	struct mdss_mdp_frc_data *first = &calc->samples[0];
+	struct mdss_mdp_frc_data *last = &calc->samples[cnt-1];
+	u64 ts_diff =
+		(last->timestamp - first->timestamp)
+				* frc_info->display_fp1000s;
+	u32 fcnt_diff =
+		last->frame_cnt - first->frame_cnt;
+	u32 fps_ratio;
+	u32 cadence_id = FRC_CADENCE_NONE;
+
+	do_div(ts_diff, fcnt_diff);
+	fps_ratio = (u32)ts_diff;
+
+	if ((fps_ratio > FRC_CADENCE_23_RATIO_LOW) &&
+			(fps_ratio < FRC_CADENCE_23_RATIO_HIGH))
+		cadence_id = FRC_CADENCE_23;
+	else if ((fps_ratio > FRC_CADENCE_22_RATIO_LOW) &&
+			(fps_ratio < FRC_CADENCE_22_RATIO_HIGH))
+		cadence_id = FRC_CADENCE_22;
+	else if ((fps_ratio > FRC_CADENCE_23223_RATIO_LOW) &&
+			(fps_ratio < FRC_CADENCE_23223_RATIO_HIGH))
+		cadence_id = FRC_CADENCE_23223;
+
+	pr_debug("frc: first=%lld, last=%lld, cnt=%d, fps_ratio=%u, cadence_id=%d\n",
+			first->timestamp, last->timestamp, fcnt_diff,
+			fps_ratio, cadence_id);
+
+	return cadence_id;
+}
+
+static void __init_seq_gen(struct mdss_mdp_frc_seq_gen *gen, int cadence_id)
+{
+	int cadence22[2] = {2, 2};
+	int cadence23[2] = {2, 3};
+	int cadence23223[5] = {2, 3, 2, 2, 3};
+	int *cadence = NULL;
+	int len = 0;
+
+	memset(gen, 0, sizeof(struct mdss_mdp_frc_seq_gen));
+	gen->pos = -EBADSLT;
+	gen->base = -1;
+
+	switch (cadence_id) {
+	case FRC_CADENCE_22:
+		cadence = cadence22;
+		len = 2;
+		break;
+	case FRC_CADENCE_23:
+		cadence = cadence23;
+		len = 2;
+		break;
+	case FRC_CADENCE_23223:
+		cadence = cadence23223;
+		len = 5;
+		break;
+	default:
+		break;
+	}
+
+	if (len > 0) {
+		memcpy(gen->seq, cadence, len * sizeof(int));
+		gen->len = len;
+		gen->retry = 0;
+	}
+
+	pr_debug("init sequence, cadence=%d len=%d\n", cadence_id, len);
+}
+
+static int __match_sequence(struct mdss_mdp_frc_seq_gen *gen)
+{
+	int pos, i;
+	int len = gen->len;
+
+	/* use default position if many attempts have failed */
+	if (gen->retry++ >= FRC_CADENCE_SEQUENCE_MAX_RETRY)
+		return 0;
+
+	for (pos = 0; pos < len; pos++) {
+		for (i = 0; i < len; i++) {
+			if (gen->cache[(i+len-1) % len]
+					!= gen->seq[(pos+i) % len])
+				break;
+		}
+		if (i == len)
+			return pos;
+	}
+
+	return -EBADSLT;
+}
+
+static void __reset_cache(struct mdss_mdp_frc_seq_gen *gen)
+{
+	memset(gen->cache, 0, gen->len * sizeof(int));
+	gen->base = -1;
+}
+
+static void __cache_last(struct mdss_mdp_frc_seq_gen *gen, int expected_vsync)
+{
+	int i = 0;
+
+	/* only cache last in case of pre-defined cadence */
+	if ((gen->pos < 0) && (gen->len > 0)) {
+		/* set first sample's expected vsync as base */
+		if (gen->base < 0) {
+			gen->base = expected_vsync;
+			return;
+		}
+
+		/* cache is 0 if not filled */
+		while (gen->cache[i] && (i < gen->len))
+			i++;
+
+		gen->cache[i] = expected_vsync - gen->base;
+		gen->base = expected_vsync;
+
+		if (i == (gen->len - 1)) {
+			/* find init pos in sequence when cache is full */
+			gen->pos = __match_sequence(gen);
+			/* reset cache and re-collect samples for matching */
+			if (gen->pos < 0)
+				__reset_cache(gen);
 		}
 	}
 }
 
+static inline bool __is_seq_gen_matched(struct mdss_mdp_frc_seq_gen *gen)
+{
+	return (gen->len > 0) && (gen->pos >= 0);
+}
+
+static int __expected_repeat(struct mdss_mdp_frc_seq_gen *gen)
+{
+	int next_repeat = -1;
+
+	if (__is_seq_gen_matched(gen)) {
+		next_repeat = gen->seq[gen->pos];
+		gen->pos = (gen->pos + 1) % gen->len;
+	}
+
+	return next_repeat;
+}
+
+static bool __is_display_fps_changed(struct msm_fb_data_type *mfd,
+	struct mdss_mdp_frc_info *frc_info)
+{
+	bool display_fps_changed = false;
+	u32 display_fp1000s = mdss_panel_get_framerate(mfd->panel_info,
+							 FPS_RESOLUTION_KHZ);
+
+	if (frc_info->display_fp1000s != display_fp1000s) {
+		pr_debug("fps changes from %d to %d\n",
+			frc_info->display_fp1000s, display_fp1000s);
+		display_fps_changed = true;
+	}
+
+	return display_fps_changed;
+}
+
+static bool __is_video_fps_changed(struct mdss_mdp_frc_info *frc_info)
+{
+	bool video_fps_changed = false;
+
+	if ((frc_info->cur_frc.frame_cnt - frc_info->video_stat.frame_cnt)
+			== FRC_VIDEO_FPS_DETECT_WINDOW) {
+		s64 delta_t = frc_info->cur_frc.timestamp -
+			frc_info->video_stat.timestamp;
+
+		if (frc_info->video_stat.last_delta) {
+			video_fps_changed =
+				abs(delta_t - frc_info->video_stat.last_delta)
+				> (FRC_VIDEO_FPS_CHANGE_THRESHOLD_US *
+					FRC_VIDEO_FPS_DETECT_WINDOW);
+
+			if (video_fps_changed)
+				pr_info("video fps changed from [%d]%lld to [%d]%lld\n",
+					frc_info->video_stat.frame_cnt,
+					frc_info->video_stat.last_delta,
+					frc_info->cur_frc.frame_cnt,
+					delta_t);
+		}
+
+		frc_info->video_stat.frame_cnt = frc_info->cur_frc.frame_cnt;
+		frc_info->video_stat.timestamp = frc_info->cur_frc.timestamp;
+		frc_info->video_stat.last_delta = delta_t;
+	}
+
+	return video_fps_changed;
+}
+
+static bool __is_video_seeking(struct mdss_mdp_frc_info *frc_info)
+{
+	s64 ts_diff =
+		frc_info->cur_frc.timestamp - frc_info->last_frc.timestamp;
+	bool video_seek = false;
+
+	video_seek = (ts_diff < 0)
+		|| (ts_diff > FRC_VIDEO_TS_DELTA_THRESHOLD_US);
+
+	if (video_seek)
+		pr_debug("video seeking: %lld -> %lld\n",
+			frc_info->last_frc.timestamp,
+			frc_info->cur_frc.timestamp);
+
+	return video_seek;
+}
+
+static bool __is_buffer_dropped(struct mdss_mdp_frc_info *frc_info)
+{
+	int buffer_drop_cnt
+		= frc_info->cur_frc.frame_cnt - frc_info->last_frc.frame_cnt;
+
+	if (buffer_drop_cnt > 1) {
+		struct mdss_mdp_frc_drop_stat *drop_stat = &frc_info->drop_stat;
+
+		/* collect dropping statistics */
+		if (!drop_stat->drop_cnt)
+			drop_stat->frame_cnt = frc_info->last_frc.frame_cnt;
+
+		drop_stat->drop_cnt++;
+
+		pr_info("video buffer drop from %d to %d\n",
+			frc_info->last_frc.frame_cnt,
+			frc_info->cur_frc.frame_cnt);
+	}
+	return buffer_drop_cnt > 1;
+}
+
+static bool __is_too_many_drops(struct mdss_mdp_frc_info *frc_info)
+{
+	struct mdss_mdp_frc_drop_stat *drop_stat = &frc_info->drop_stat;
+	bool too_many = false;
+
+	if (drop_stat->drop_cnt > FRC_MAX_VIDEO_DROPPING_CNT) {
+		too_many = (frc_info->cur_frc.frame_cnt - drop_stat->frame_cnt
+			< FRC_VIDEO_DROP_TOLERANCE_WINDOW);
+		frc_info->drop_stat.drop_cnt = 0;
+	}
+
+	return too_many;
+}
+
+static bool __is_video_cnt_rollback(struct mdss_mdp_frc_info *frc_info)
+{
+	/* video frame_cnt is assumed to increase monotonically */
+	bool video_rollback
+		= (frc_info->cur_frc.frame_cnt < frc_info->last_frc.frame_cnt)
+			|| (frc_info->cur_frc.frame_cnt <
+				frc_info->base_frc.frame_cnt);
+
+	if (video_rollback)
+		pr_info("video frame_cnt rolls back from %d to %d\n",
+			frc_info->last_frc.frame_cnt,
+			frc_info->cur_frc.frame_cnt);
+
+	return video_rollback;
+}
+
+static bool __is_video_pause(struct msm_fb_data_type *mfd,
+	struct mdss_mdp_frc_info *frc_info)
+{
+	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
+	bool video_pause =
+		(frc_info->cur_frc.frame_cnt - frc_info->last_frc.frame_cnt
+				== 1)
+		&& (ctl->vsync_cnt - frc_info->last_vsync_cnt >
+				FRC_VIDEO_PAUSE_THRESHOLD);
+
+	if (video_pause)
+		pr_debug("video paused: vsync elapsed %d\n",
+			ctl->vsync_cnt - frc_info->last_vsync_cnt);
+
+	return video_pause;
+}
+
 /*
- * Check if there is any change in secure state and store it.
+ * Workaround for some cases that video has the same timestamp for
+ * different frame. E.g., video player might provide the same frame
+ * twice to codec when seeking/flushing.
  */
-static void __overlay_set_secure_transition_state(struct msm_fb_data_type *mfd)
+static bool __is_timestamp_duplicated(struct mdss_mdp_frc_info *frc_info)
+{
+	bool ts_dup =
+		(frc_info->cur_frc.frame_cnt != frc_info->last_frc.frame_cnt)
+			&& (frc_info->cur_frc.timestamp
+				== frc_info->last_frc.timestamp);
+
+	if (ts_dup)
+		pr_info("timestamp of frame %d and %d are duplicated\n",
+			frc_info->last_frc.frame_cnt,
+			frc_info->cur_frc.frame_cnt);
+
+	return ts_dup;
+}
+
+static void __set_frc_base(struct msm_fb_data_type *mfd,
+	struct mdss_mdp_frc_info *frc_info)
+{
+	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
+
+	frc_info->base_vsync_cnt = ctl->vsync_cnt;
+	frc_info->base_frc = frc_info->cur_frc;
+	frc_info->last_frc = frc_info->cur_frc;
+	frc_info->last_repeat = 0;
+	frc_info->last_vsync_cnt = 0;
+	frc_info->cadence_id = FRC_CADENCE_NONE;
+	frc_info->video_stat.last_delta = 0;
+	frc_info->video_stat.frame_cnt = frc_info->cur_frc.frame_cnt;
+	frc_info->video_stat.timestamp = frc_info->cur_frc.timestamp;
+	frc_info->display_fp1000s =
+		mdss_panel_get_framerate(mfd->panel_info, FPS_RESOLUTION_KHZ);
+
+
+	pr_debug("frc_base: vsync_cnt=%d frame_cnt=%d timestamp=%lld\n",
+		frc_info->base_vsync_cnt, frc_info->cur_frc.frame_cnt,
+		frc_info->cur_frc.timestamp);
+}
+
+/* calculate when we'd like to kickoff current frame based on its timestamp */
+static int __calculate_remaining_vsync(struct msm_fb_data_type *mfd,
+	struct mdss_mdp_frc_info *frc_info)
+{
+	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
+	struct mdss_mdp_frc_data *cur_frc = &frc_info->cur_frc;
+	struct mdss_mdp_frc_data *base_frc = &frc_info->base_frc;
+	int vsync_diff, expected_vsync_cnt, remaining_vsync;
+
+	/* how many vsync intervals between current & base */
+	vsync_diff = __compute_vsync_diff(cur_frc->timestamp,
+			base_frc->timestamp, frc_info->display_fp1000s);
+
+	/* expected vsync where we'd like to kickoff current frame */
+	expected_vsync_cnt = frc_info->base_vsync_cnt + vsync_diff;
+	/* how many remaining vsync we need display till kickoff */
+	remaining_vsync = expected_vsync_cnt - ctl->vsync_cnt;
+
+	pr_debug("frc: expected_vsync_cnt=%d, cur_vsync_cnt=%d, remaining=%d\n",
+		expected_vsync_cnt, ctl->vsync_cnt, remaining_vsync);
+
+	return remaining_vsync;
+}
+
+/* tune latency computed previously if possible jitter exists */
+static int __tune_possible_jitter(struct msm_fb_data_type *mfd,
+	struct mdss_mdp_frc_info *frc_info, int remaining_vsync)
+{
+	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
+	int cadence_id = frc_info->cadence_id;
+	int remaining = remaining_vsync;
+	int expected_repeat = __expected_repeat(&frc_info->gen);
+
+	if (cadence_id && (expected_repeat > 0)) {
+		int expected_vsync_cnt = remaining + ctl->vsync_cnt;
+		/* how many times current frame will be repeated */
+		int cur_repeat = expected_vsync_cnt - frc_info->last_vsync_cnt;
+
+		remaining -= cur_repeat - expected_repeat;
+		pr_debug("frc: tune vsync, input=%d, output=%d, last_repeat=%d, cur_repeat=%d, expected_repeat=%d\n",
+			remaining_vsync, remaining, frc_info->last_repeat,
+			cur_repeat, expected_repeat);
+	}
+
+	return remaining;
+}
+
+/* compute how many vsync we still need to wait for keeping cadence */
+static int __calculate_remaining_repeat(struct msm_fb_data_type *mfd,
+	struct mdss_mdp_frc_info *frc_info)
+{
+	int remaining_vsync = __calculate_remaining_vsync(mfd, frc_info);
+
+	remaining_vsync =
+		__tune_possible_jitter(mfd, frc_info, remaining_vsync);
+
+	return remaining_vsync;
+}
+
+static int __repeat_current_frame(struct mdss_mdp_ctl *ctl, int repeat)
+{
+	int expected_vsync = ctl->vsync_cnt + repeat;
+	int cnt = 0;
+	int ret = 0;
+
+	while (ctl->vsync_cnt < expected_vsync) {
+		cnt++;
+		if (ctl->ops.wait_vsync_fnc) {
+			ret = ctl->ops.wait_vsync_fnc(ctl);
+			if (ret < 0)
+				break;
+		}
+	}
+
+	if (ret)
+		pr_err("wrong waiting: repeat %d, actual: %d\n", repeat, cnt);
+
+	return ret;
+}
+
+static void __save_last_frc_info(struct mdss_mdp_ctl *ctl,
+	struct mdss_mdp_frc_info *frc_info)
+{
+	/* save last data */
+	frc_info->last_frc = frc_info->cur_frc;
+	frc_info->last_repeat = ctl->vsync_cnt - frc_info->last_vsync_cnt;
+	frc_info->last_vsync_cnt = ctl->vsync_cnt;
+}
+
+static void cadence_detect_callback(struct mdss_mdp_frc_fsm *frc_fsm)
+{
+	struct mdss_mdp_frc_info *frc_info = &frc_fsm->frc_info;
+
+	__init_cadence_calc(&frc_info->calc);
+}
+
+static void seq_match_callback(struct mdss_mdp_frc_fsm *frc_fsm)
+{
+	struct mdss_mdp_frc_info *frc_info = &frc_fsm->frc_info;
+
+	__init_seq_gen(&frc_info->gen, frc_info->cadence_id);
+}
+
+static void frc_disable_callback(struct mdss_mdp_frc_fsm *frc_fsm)
+{
+	struct mdss_mdp_frc_info *frc_info = &frc_fsm->frc_info;
+
+	frc_info->cadence_id = FRC_CADENCE_DISABLE;
+}
+
+/* default behavior of FRC FSM */
+static bool __is_frc_state_changed_in_default(struct msm_fb_data_type *mfd,
+	struct mdss_mdp_frc_info *frc_info)
+{
+	/*
+	 * Need change to INIT state in case of 2 changes:
+	 *
+	 * 1) video frame_cnt has been rolled back by codec.
+	 * 2) video fast-foward or rewind. Sometimes video seeking might cause
+	 *    buffer drop as well, so check seek ahead of buffer drop in order
+	 *    to avoid duplicated check.
+	 * 3) buffer drop.
+	 * 4) display fps has changed.
+	 * 5) video frame rate has changed.
+	 * 6) video pauses. it could be considered as lag case.
+	 * 7) duplicated timestamp of different frames which breaks FRC.
+	 */
+	return (__is_video_cnt_rollback(frc_info) ||
+		__is_video_seeking(frc_info) ||
+		__is_buffer_dropped(frc_info) ||
+		__is_display_fps_changed(mfd, frc_info) ||
+		__is_video_fps_changed(frc_info) ||
+		__is_video_pause(mfd, frc_info) ||
+		__is_timestamp_duplicated(frc_info));
+}
+
+static void __pre_frc_in_default(struct mdss_mdp_frc_fsm *frc_fsm, void *arg)
+{
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)arg;
+	struct mdss_mdp_frc_info *frc_info = &frc_fsm->frc_info;
+
+	if (__is_too_many_drops(frc_info)) {
+		/*
+		 * disable frc when dropping too many buffers, this might happen
+		 * in some extreme cases like video is heavily loaded so any
+		 * extra latency could make things worse.
+		 */
+		pr_info("disable frc because there're too many drops\n");
+		mdss_mdp_frc_fsm_change_state(frc_fsm,
+			FRC_STATE_DISABLE, frc_disable_callback);
+		mdss_mdp_frc_fsm_update_state(frc_fsm);
+	} else if (__is_frc_state_changed_in_default(mfd, frc_info)) {
+		/* FRC status changed so reset to INIT state */
+		mdss_mdp_frc_fsm_change_state(frc_fsm, FRC_STATE_INIT, NULL);
+		mdss_mdp_frc_fsm_update_state(frc_fsm);
+	}
+}
+
+static void __do_frc_in_default(struct mdss_mdp_frc_fsm *frc_fsm, void *arg)
+{
+	/* do nothing */
+}
+
+static void __post_frc_in_default(struct mdss_mdp_frc_fsm *frc_fsm, void *arg)
+{
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)arg;
+	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
+	struct mdss_mdp_frc_info *frc_info = &frc_fsm->frc_info;
+
+	__save_last_frc_info(ctl, frc_info);
+
+	/* update frc_fsm state to new state for the next round */
+	mdss_mdp_frc_fsm_update_state(frc_fsm);
+}
+
+/* behavior of FRC FSM in INIT state */
+static void __do_frc_in_init_state(struct mdss_mdp_frc_fsm *frc_fsm, void *arg)
+{
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)arg;
+	struct mdss_mdp_frc_info *frc_info = &frc_fsm->frc_info;
+
+	__set_frc_base(mfd, frc_info);
+
+	mdss_mdp_frc_fsm_change_state(frc_fsm,
+		FRC_STATE_CADENCE_DETECT, cadence_detect_callback);
+}
+
+/* behavior of FRC FSM in CADENCE_DETECT state */
+static void __do_frc_in_cadence_detect_state(struct mdss_mdp_frc_fsm *frc_fsm,
+	void *arg)
+{
+	struct mdss_mdp_frc_info *frc_info = &frc_fsm->frc_info;
+	struct mdss_mdp_frc_cadence_calc *calc = &frc_info->calc;
+
+	if (calc->sample_cnt < FRC_CADENCE_DETECT_WINDOW) {
+		calc->samples[calc->sample_cnt++] = frc_info->cur_frc;
+	} else {
+		/*
+		 * Get enough samples and check candence. FRC_CADENCE_23
+		 * and FRC_CADENCE_22 need >= 2 deltas, and >= 5 deltas
+		 * are necessary for computing FRC_CADENCE_23223.
+		 */
+		u32 cadence_id = FRC_CADENCE_23;
+		u32 sample_cnt[FRC_MAX_SUPPORT_CADENCE] = {0, 5, 5, 6};
+
+		while (cadence_id < FRC_CADENCE_FREE_RUN) {
+			if (cadence_id ==
+					__calculate_cadence_id(frc_info,
+						sample_cnt[cadence_id]))
+				break;
+			cadence_id++;
+		}
+
+		frc_info->cadence_id = cadence_id;
+		pr_info("frc: cadence_id=%d\n", cadence_id);
+
+		/* detected supported cadence, start sequence match */
+		if (__is_supported_candence(frc_info->cadence_id))
+			mdss_mdp_frc_fsm_change_state(frc_fsm,
+				FRC_STATE_SEQ_MATCH, seq_match_callback);
+		else
+			mdss_mdp_frc_fsm_change_state(frc_fsm,
+					FRC_STATE_FREERUN, NULL);
+	}
+}
+
+/* behavior of FRC FSM in SEQ_MATCH state */
+static void __do_frc_in_seq_match_state(struct mdss_mdp_frc_fsm *frc_fsm,
+	void *arg)
+{
+	struct mdss_mdp_frc_info *frc_info = &frc_fsm->frc_info;
+	struct mdss_mdp_frc_data *cur_frc = &frc_info->cur_frc;
+	struct mdss_mdp_frc_data *base_frc = &frc_info->base_frc;
+	int vsync_diff;
+
+	/* how many vsync intervals between current & base */
+	vsync_diff = __compute_vsync_diff(cur_frc->timestamp,
+			base_frc->timestamp, frc_info->display_fp1000s);
+
+	/* cache vsync diff to compute start pos in cadence */
+	__cache_last(&frc_info->gen, vsync_diff);
+
+	if (__is_seq_gen_matched(&frc_info->gen))
+		mdss_mdp_frc_fsm_change_state(frc_fsm, FRC_STATE_READY, NULL);
+}
+
+/* behavior of FRC FSM in FREE_RUN state */
+static bool __is_frc_state_changed_in_freerun_state(
+	struct msm_fb_data_type *mfd,
+	struct mdss_mdp_frc_info *frc_info)
+{
+	/*
+	 * Only need change to INIT state in case of 2 changes:
+	 *
+	 * 1) display fps has changed.
+	 * 2) video frame rate has changed.
+	 */
+	return (__is_display_fps_changed(mfd, frc_info) ||
+		__is_video_fps_changed(frc_info));
+}
+
+static void __pre_frc_in_freerun_state(struct mdss_mdp_frc_fsm *frc_fsm,
+	void *arg)
+{
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)arg;
+	struct mdss_mdp_frc_info *frc_info = &frc_fsm->frc_info;
+
+	/* FRC status changed so reset to INIT state */
+	if (__is_frc_state_changed_in_freerun_state(mfd, frc_info)) {
+		/* update state to INIT immediately */
+		mdss_mdp_frc_fsm_change_state(frc_fsm, FRC_STATE_INIT, NULL);
+		mdss_mdp_frc_fsm_update_state(frc_fsm);
+	}
+}
+
+/* behavior of FRC FSM in READY state */
+static void __do_frc_in_ready_state(struct mdss_mdp_frc_fsm *frc_fsm, void *arg)
+{
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)arg;
+	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
+	struct mdss_mdp_frc_info *frc_info = &frc_fsm->frc_info;
+	struct mdss_mdp_frc_data *cur_frc = &frc_info->cur_frc;
+
+	int remaining_repeat =
+		__calculate_remaining_repeat(mfd, frc_info);
+
+	mdss_debug_frc_add_kickoff_sample_pre(ctl, frc_info, remaining_repeat);
+
+	/* video arrives later than expected */
+	if (remaining_repeat < 0) {
+		pr_info("Frame %d lags behind %d vsync\n",
+				cur_frc->frame_cnt, -remaining_repeat);
+		mdss_mdp_frc_fsm_change_state(frc_fsm, FRC_STATE_INIT, NULL);
+		remaining_repeat = 0;
+	}
+
+	if (mdss_debug_frc_frame_repeat_disabled())
+		remaining_repeat = 0;
+
+	__repeat_current_frame(ctl, remaining_repeat);
+
+	mdss_debug_frc_add_kickoff_sample_post(ctl, frc_info, remaining_repeat);
+}
+
+/* behavior of FRC FSM in DISABLE state */
+static void __pre_frc_in_disable_state(struct mdss_mdp_frc_fsm *frc_fsm,
+	void *arg)
+{
+	/* do nothing */
+}
+
+static void __post_frc_in_disable_state(struct mdss_mdp_frc_fsm *frc_fsm,
+	void *arg)
+{
+	/* do nothing */
+}
+
+/* predefined state table of FRC FSM */
+static struct mdss_mdp_frc_fsm_state frc_fsm_states[FRC_STATE_MAX] = {
+	{
+		.name = "FRC_FSM_INIT",
+		.state = FRC_STATE_INIT,
+		.ops = {
+			.pre_frc = __pre_frc_in_default,
+			.do_frc = __do_frc_in_init_state,
+			.post_frc = __post_frc_in_default,
+		},
+	},
+
+	{
+		.name = "FRC_FSM_CADENCE_DETECT",
+		.state = FRC_STATE_CADENCE_DETECT,
+		.ops = {
+			.pre_frc = __pre_frc_in_default,
+			.do_frc = __do_frc_in_cadence_detect_state,
+			.post_frc = __post_frc_in_default,
+		},
+	},
+
+	{
+		.name = "FRC_FSM_SEQ_MATCH",
+		.state = FRC_STATE_SEQ_MATCH,
+		.ops = {
+			.pre_frc = __pre_frc_in_default,
+			.do_frc = __do_frc_in_seq_match_state,
+			.post_frc = __post_frc_in_default,
+		},
+	},
+
+	{
+		.name = "FRC_FSM_FREERUN",
+		.state = FRC_STATE_FREERUN,
+		.ops = {
+			.pre_frc = __pre_frc_in_freerun_state,
+			.do_frc = __do_frc_in_default,
+			.post_frc = __post_frc_in_default,
+		},
+	},
+
+	{
+		.name = "FRC_FSM_READY",
+		.state = FRC_STATE_READY,
+		.ops = {
+			.pre_frc = __pre_frc_in_default,
+			.do_frc = __do_frc_in_ready_state,
+			.post_frc = __post_frc_in_default,
+		},
+	},
+
+	{
+		.name = "FRC_FSM_DISABLE",
+		.state = FRC_STATE_DISABLE,
+		.ops = {
+			.pre_frc = __pre_frc_in_disable_state,
+			.do_frc = __do_frc_in_default,
+			.post_frc = __post_frc_in_disable_state,
+		},
+	},
+};
+
+/*
+ * FRC FSM operations:
+ * mdss_mdp_frc_fsm_init_state: Init FSM state.
+ * mdss_mdp_frc_fsm_change_state: Change FSM state. The desired state will not
+ *                                be effective till update_state is called.
+ * mdss_mdp_frc_fsm_update_state: Update FSM state. Changed state is effective
+ *                                immediately once this function is called.
+ */
+void mdss_mdp_frc_fsm_init_state(struct mdss_mdp_frc_fsm *frc_fsm)
+{
+	pr_debug("frc_fsm: init frc fsm state\n");
+	frc_fsm->state = frc_fsm->to_state = frc_fsm_states[FRC_STATE_INIT];
+	memset(&frc_fsm->frc_info, 0, sizeof(struct mdss_mdp_frc_info));
+}
+
+void mdss_mdp_frc_fsm_change_state(struct mdss_mdp_frc_fsm *frc_fsm,
+	enum mdss_mdp_frc_state_type state,
+	void (*cb)(struct mdss_mdp_frc_fsm *frc_fsm))
+{
+	if (state != frc_fsm->state.state) {
+		pr_debug("frc_fsm: state changes from %s to %s\n",
+				frc_fsm->state.name,
+				frc_fsm_states[state].name);
+		frc_fsm->to_state = frc_fsm_states[state];
+		frc_fsm->cbs.update_state_cb = cb;
+	}
+}
+
+void mdss_mdp_frc_fsm_update_state(struct mdss_mdp_frc_fsm *frc_fsm)
+{
+	if (frc_fsm->to_state.state != frc_fsm->state.state) {
+		pr_debug("frc_fsm: state updates from %s to %s\n",
+				frc_fsm->state.name,
+				frc_fsm->to_state.name);
+
+		if (frc_fsm->cbs.update_state_cb)
+			frc_fsm->cbs.update_state_cb(frc_fsm);
+
+		frc_fsm->state = frc_fsm->to_state;
+	}
+}
+
+static void mdss_mdp_overlay_update_frc(struct msm_fb_data_type *mfd)
 {
 	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(mfd);
+	struct mdss_mdp_frc_fsm *frc_fsm = mdp5_data->frc_fsm;
+	struct mdss_mdp_frc_info *frc_info = &frc_fsm->frc_info;
+
+	if (__validate_frc_info(frc_info)) {
+		struct mdss_mdp_frc_fsm_state *state = &frc_fsm->state;
+
+		state->ops.pre_frc(frc_fsm, mfd);
+		state->ops.do_frc(frc_fsm, mfd);
+		state->ops.post_frc(frc_fsm, mfd);
+	}
+}
+
+/*
+ * Enables/disable secure (display or camera) sessions
+ */
+static int __overlay_secure_ctrl(struct msm_fb_data_type *mfd)
+{
+	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(mfd);
+	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
 	struct mdss_mdp_pipe *pipe;
+	int ret = 0;
 	int sd_in_pipe = 0;
 	int sc_in_pipe = 0;
-	u64 pipes_flags = 0;
 
 	list_for_each_entry(pipe, &mdp5_data->pipes_used, list) {
-		pipes_flags |= pipe->flags;
 		if (pipe->flags & MDP_SECURE_DISPLAY_OVERLAY_SESSION) {
 			sd_in_pipe = 1;
 			pr_debug("Secure pipe: %u : %16llx\n",
@@ -2372,80 +3139,18 @@ static void __overlay_set_secure_transition_state(struct msm_fb_data_type *mfd)
 		}
 	}
 
-	MDSS_XLOG(sd_in_pipe, sc_in_pipe, pipes_flags,
-			mdp5_data->sc_enabled, mdp5_data->sd_enabled);
-	pr_debug("sd:%d sd_in_pipe:%d sc:%d sc_in_pipe:%d flags:0x%llx\n",
-			mdp5_data->sd_enabled, sd_in_pipe,
-			mdp5_data->sc_enabled, sc_in_pipe, pipes_flags);
-
-	/* Reset the secure transition state */
-	mdp5_data->secure_transition_state = SECURE_TRANSITION_NONE;
-
-	mdp5_data->cache_null_commit = list_empty(&mdp5_data->pipes_used);
-
-	/*
-	 * Secure transition would be NONE in two conditions:
-	 * 1. All the features are already disabled and state remains
-	 *    disabled for the pipes.
-	 * 2. One of the features is already enabled and state remains
-	 *    enabled for the pipes.
-	 */
-	if (!sd_in_pipe && !mdp5_data->sd_enabled &&
-			!sc_in_pipe && !mdp5_data->sc_enabled)
-		return;
-	else if ((sd_in_pipe && mdp5_data->sd_enabled) ||
+	if ((!sd_in_pipe && !mdp5_data->sd_enabled) ||
+			(sd_in_pipe && mdp5_data->sd_enabled) ||
+			(!sc_in_pipe && !mdp5_data->sc_enabled) ||
 			(sc_in_pipe && mdp5_data->sc_enabled))
-		return;
-
-	/* Secure Display */
-	if (!mdp5_data->sd_enabled && sd_in_pipe)
-		mdp5_data->secure_transition_state |= SD_NON_SECURE_TO_SECURE;
-	else if (mdp5_data->sd_enabled && !sd_in_pipe)
-		mdp5_data->secure_transition_state |= SD_SECURE_TO_NON_SECURE;
-
-	/* Secure Camera */
-	if (!mdp5_data->sc_enabled && sc_in_pipe)
-		mdp5_data->secure_transition_state |= SC_NON_SECURE_TO_SECURE;
-	else if (mdp5_data->sc_enabled && !sc_in_pipe)
-		mdp5_data->secure_transition_state |= SC_SECURE_TO_NON_SECURE;
-}
-
-/*
- * Enable/disable secure (display or camera) sessions
- */
-static int __overlay_secure_ctrl(struct msm_fb_data_type *mfd)
-{
-	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(mfd);
-	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
-	int ret = 0;
-
-	if (mdp5_data->secure_transition_state == SECURE_TRANSITION_NONE)
 		return ret;
 
 	/* Secure Display */
-	if (mdp5_data->secure_transition_state == SD_NON_SECURE_TO_SECURE) {
+	if (!mdp5_data->sd_enabled && sd_in_pipe) {
 		if (!mdss_get_sd_client_cnt()) {
-			MDSS_XLOG(0x11);
-			/* wait for ping pong done */
-			if (ctl->ops.wait_pingpong) {
+			/*wait for ping pong done */
+			if (ctl->ops.wait_pingpong)
 				mdss_mdp_display_wait4pingpong(ctl, true);
-
-				/*
-				 * For command mode panels, there will not be
-				 * a NULL commit preceding secure display. If
-				 * a pipe is reused for secure display,
-				 * cleanup buffers in the secure pipe before
-				 * detaching IOMMU.
-				 */
-				__overlay_cleanup_secure_pipe(mfd);
-			}
-			/*
-			 * unmap the previous commit buffers before
-			 * transitioning to secure state
-			 */
-			mdss_mdp_overlay_cleanup(mfd,
-					&mdp5_data->pipes_destroy,
-					true);
 			ret = mdss_mdp_secure_session_ctrl(1,
 					MDP_SECURE_DISPLAY_OVERLAY_SESSION);
 			if (ret) {
@@ -2548,6 +3253,12 @@ int mdss_mdp_overlay_kickoff(struct msm_fb_data_type *mfd,
 
 	mutex_lock(&mdp5_data->list_lock);
 
+	ret = __overlay_secure_ctrl(mfd);
+	if (IS_ERR_VALUE((unsigned long) ret)) {
+		pr_err("secure operation failed %d\n", ret);
+		goto commit_fail;
+	}
+
 	if (!ctl->shared_lock)
 		mdss_mdp_ctl_notify(ctl, MDP_NOTIFY_FRAME_BEGIN);
 
@@ -2559,6 +3270,14 @@ int mdss_mdp_overlay_kickoff(struct msm_fb_data_type *mfd,
 	if (ctl->ops.wait_pingpong && mdp5_data->mdata->serialize_wait4pp)
 		mdss_mdp_display_wait4pingpong(ctl, true);
 
+	if (!data) {
+		atomic_inc(&mfd->mdp_sync_pt_data.commit_cnt);
+		MDSS_XLOG(atomic_read(&mfd->mdp_sync_pt_data.commit_cnt));
+	}
+	/*
+	 * Setup pipe in solid fill before unstaging,
+	 * to ensure no fetches are happening after dettach or reattach.
+	 */
 	list_for_each_entry_safe(pipe, tmp, &mdp5_data->pipes_cleanup, list) {
 		mdss_mdp_mixer_pipe_unstage(pipe, pipe->mixer_left);
 		mdss_mdp_mixer_pipe_unstage(pipe, pipe->mixer_right);
@@ -2599,6 +3318,9 @@ int mdss_mdp_overlay_kickoff(struct msm_fb_data_type *mfd,
 	ATRACE_BEGIN("dest_scaler_programming");
 	ret = __dest_scaler_setup(mfd);
 	ATRACE_END("dest_scaler_programming");
+  
+  	if (mdp5_data->frc_fsm->enable)
+		mdss_mdp_overlay_update_frc(mfd);
 
 	if (mfd->panel.type == WRITEBACK_PANEL) {
 		ATRACE_BEGIN("wb_kickoff");
@@ -3043,7 +3765,7 @@ done:
 static void mdss_mdp_overlay_pan_display(struct msm_fb_data_type *mfd)
 {
 	struct mdss_mdp_data *buf_l = NULL, *buf_r = NULL;
-	struct mdss_mdp_pipe *l_pipe, *r_pipe;
+	struct mdss_mdp_pipe *l_pipe, *r_pipe, *pipe, *tmp;
 	struct fb_info *fbi;
 	struct mdss_overlay_private *mdp5_data;
 	struct mdss_data_type *mdata;
@@ -3072,6 +3794,19 @@ static void mdss_mdp_overlay_pan_display(struct msm_fb_data_type *mfd)
 
 	if (IS_ERR_OR_NULL(mfd->fbmem_buf) || fbi->fix.smem_len == 0 ||
 		mdp5_data->borderfill_enable) {
+		if (mdata->handoff_pending) {
+			/*
+			 * Move pipes to cleanup queue and avoid kickoff if
+			 * pan display is called before handoff is completed.
+			 */
+			mutex_lock(&mdp5_data->list_lock);
+			list_for_each_entry_safe(pipe, tmp,
+			    &mdp5_data->pipes_used, list) {
+				list_move(&pipe->list,
+					&mdp5_data->pipes_cleanup);
+			}
+			mutex_unlock(&mdp5_data->list_lock);
+		}
 		mfd->mdp.kickoff_fnc(mfd, NULL);
 		return;
 	}
@@ -3240,6 +3975,13 @@ static void mdss_mdp_recover_underrun_handler(struct mdss_mdp_ctl *ctl,
 	schedule_work(&ctl->remove_underrun_handler);
 }
 
+/* do nothing in case of deterministic frame rate control, only keep vsync on */
+static void mdss_mdp_overlay_frc_handler(struct mdss_mdp_ctl *ctl,
+						ktime_t t)
+{
+	pr_debug("vsync on ctl%d vsync_cnt=%d\n", ctl->num, ctl->vsync_cnt);
+}
+
 /* function is called in irq context should have minimum processing */
 static void mdss_mdp_overlay_handle_vsync(struct mdss_mdp_ctl *ctl,
 						ktime_t t)
@@ -3389,7 +4131,8 @@ static void cache_initial_timings(struct mdss_panel_data *pdata)
 				pdata->panel_info.lcdc.frame_rate;
 		else
 			pdata->panel_info.current_fps =
-				mdss_panel_get_framerate(&pdata->panel_info);
+				mdss_panel_get_framerate(&pdata->panel_info,
+				FPS_RESOLUTION_DEFAULT);
 		/*
 		 * Keep the initial fps and porch values for this panel before
 		 * any dfps update happen, this is to prevent losing precision
@@ -3400,7 +4143,8 @@ static void cache_initial_timings(struct mdss_panel_data *pdata)
 				pdata->panel_info.lcdc.frame_rate;
 		else
 			pdata->panel_info.default_fps =
-				mdss_panel_get_framerate(&pdata->panel_info);
+				mdss_panel_get_framerate(&pdata->panel_info,
+				FPS_RESOLUTION_DEFAULT);
 
 		if (pdata->panel_info.dfps_update ==
 					DFPS_IMMEDIATE_PORCH_UPDATE_MODE_VFP) {
@@ -3598,7 +4342,8 @@ static ssize_t dynamic_fps_sysfs_wta_dfps(struct device *dev,
 	if (pdata->panel_info.type == DTV_PANEL)
 		panel_fps = pdata->panel_info.lcdc.frame_rate;
 	else
-		panel_fps = mdss_panel_get_framerate(&pdata->panel_info);
+		panel_fps = mdss_panel_get_framerate(&pdata->panel_info,
+			FPS_RESOLUTION_DEFAULT);
 
 	if (data.fps == panel_fps) {
 		pr_debug("%s: FPS is already %d\n",
@@ -4288,6 +5033,7 @@ static void mdss_mdp_hw_cursor_blend_config(struct mdss_mdp_mixer *mixer,
 		struct fb_cursor *cursor)
 {
 	u32 blendcfg;
+
 	if (!mixer) {
 		pr_err("mixer not availbale\n");
 		return;
@@ -4360,7 +5106,8 @@ int mdss_mdp_cursor_flush(struct msm_fb_data_type *mfd,
 }
 
 static int mdss_mdp_cursor_pipe_setup(struct msm_fb_data_type *mfd,
-		struct mdp_overlay *req, int cursor_pipe) {
+		struct mdp_overlay *req, int cursor_pipe)
+{
 	struct mdss_mdp_pipe *pipe;
 	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(mfd);
 	struct mdss_data_type *mdata = mdss_mdp_get_mdata();
@@ -4701,6 +5448,7 @@ static int mdss_mdp_hw_cursor_update(struct msm_fb_data_type *mfd,
 
 	if (mfd->cursor_buf && (cursor->set & FB_CUR_SETIMAGE)) {
 		u32 cursor_addr;
+
 		ret = copy_from_user(mfd->cursor_buf, img->data,
 				     img->width * img->height * 4);
 		if (ret) {
@@ -4743,6 +5491,7 @@ static int mdss_mdp_hw_cursor_update(struct msm_fb_data_type *mfd,
 		mdss_mdp_hw_cursor_blend_config(mixer_left, cursor);
 	} else {
 		struct mdss_rect roi_right = roi;
+
 		roi.w = left_lm_w - start_x;
 		if (cursor->set & FB_CUR_SETPOS)
 			mdss_mdp_hw_cursor_setpos(mixer_left, &roi, start_x,
@@ -4770,10 +5519,13 @@ static int mdss_bl_scale_config(struct msm_fb_data_type *mfd,
 {
 	int ret = 0;
 	int curr_bl;
+
 	mutex_lock(&mfd->bl_lock);
 	curr_bl = mfd->bl_level;
 	mfd->bl_scale = data->scale;
-	pr_debug("update scale = %d\n", mfd->bl_scale);
+	mfd->bl_min_lvl = data->min_lvl;
+	pr_debug("update scale = %d, min_lvl = %d\n", mfd->bl_scale,
+							mfd->bl_min_lvl);
 
 	/* Update current backlight to use new scaling, if it is not zero */
 	if (curr_bl)
@@ -4963,6 +5715,7 @@ static int mdss_fb_set_metadata(struct msm_fb_data_type *mfd,
 	struct mdss_data_type *mdata = mfd_to_mdata(mfd);
 	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
 	int ret = 0;
+
 	if (!ctl)
 		return  -EPERM;
 	switch (metadata->op) {
@@ -5004,6 +5757,7 @@ static int mdss_fb_get_hw_caps(struct msm_fb_data_type *mfd,
 		struct mdss_hw_caps *caps)
 {
 	struct mdss_data_type *mdata = mfd_to_mdata(mfd);
+
 	caps->mdp_rev = mdata->mdp_rev;
 	caps->vig_pipes = mdata->nvig_pipes;
 	caps->rgb_pipes = mdata->nrgb_pipes;
@@ -5031,7 +5785,8 @@ static int mdss_fb_get_metadata(struct msm_fb_data_type *mfd,
 	switch (metadata->op) {
 	case metadata_op_frame_rate:
 		metadata->data.panel_frame_rate =
-			mdss_panel_get_framerate(mfd->panel_info);
+			mdss_panel_get_framerate(mfd->panel_info,
+				FPS_RESOLUTION_DEFAULT);
 		pr_debug("current fps:%d\n", metadata->data.panel_frame_rate);
 		break;
 	case metadata_op_get_caps:
@@ -5618,6 +6373,10 @@ static struct mdss_mdp_ctl *__mdss_mdp_overlay_ctl_init(
 			mdss_mdp_recover_underrun_handler;
 	ctl->recover_underrun_handler.cmd_post_flush = false;
 
+	ctl->frc_vsync_handler.vsync_handler =
+			mdss_mdp_overlay_frc_handler;
+	ctl->frc_vsync_handler.cmd_post_flush = false;
+
 	ctl->lineptr_handler.lineptr_handler =
 					mdss_mdp_overlay_handle_lineptr;
 
@@ -5707,6 +6466,7 @@ static int mdss_mdp_overlay_on(struct msm_fb_data_type *mfd)
 	int rc;
 	struct mdss_overlay_private *mdp5_data;
 	struct mdss_mdp_ctl *ctl = NULL;
+	struct mdss_data_type *mdata;
 
 	if (!mfd)
 		return -ENODEV;
@@ -5716,6 +6476,10 @@ static int mdss_mdp_overlay_on(struct msm_fb_data_type *mfd)
 
 	mdp5_data = mfd_to_mdp5_data(mfd);
 	if (!mdp5_data)
+		return -EINVAL;
+
+	mdata = mfd_to_mdata(mfd);
+	if (!mdata)
 		return -EINVAL;
 
 	mdss_mdp_set_lm_flag(mfd);
@@ -5746,7 +6510,9 @@ static int mdss_mdp_overlay_on(struct msm_fb_data_type *mfd)
 		NULL, false);
 	if (rc)
 		goto panel_on;
-
+	/*Skip the overlay start and kickoff for DTV panel and
+	 * pluggable panels (bridge chip hdmi case).
+	 */
 	if (!mfd->panel_info->cont_splash_enabled &&
 		(mfd->panel_info->type != DTV_PANEL) &&
 			!mfd->panel_info->is_pluggable) {
@@ -5924,7 +6690,8 @@ ctl_stop:
 	retire_cnt = mdp5_data->retire_cnt;
 	mutex_unlock(&mfd->mdp_sync_pt_data.sync_mutex);
 	if (retire_cnt) {
-		u32 fps = mdss_panel_get_framerate(mfd->panel_info);
+		u32 fps = mdss_panel_get_framerate(mfd->panel_info,
+					FPS_RESOLUTION_HZ);
 		u32 vsync_time = 1000 / (fps ? : DEFAULT_FRAME_RATE);
 
 		msleep(vsync_time);
@@ -5944,6 +6711,7 @@ ctl_stop:
 
 		kthread_flush_work(&mdp5_data->vsync_work);
 	}
+
 
 	mutex_lock(&mdp5_data->ov_lock);
 	/* set the correct pipe_mapped before ctl_stop */
@@ -6016,6 +6784,7 @@ static int __mdss_mdp_ctl_handoff(struct msm_fb_data_type *mfd,
 		j = MDSS_MDP_SSPP_VIG0;
 		for (; j < MDSS_MDP_SSPP_CURSOR0 && mixercfg; j++) {
 			u32 cfg = j * 3;
+
 			if ((j == MDSS_MDP_SSPP_VIG3) ||
 			    (j == MDSS_MDP_SSPP_RGB3)) {
 				/* Add 2 to account for Cursor & Border bits */
@@ -6652,6 +7421,8 @@ int mdss_mdp_overlay_init(struct msm_fb_data_type *mfd)
 		pr_warn("Failed to initialize pp overlay data.\n");
 	return rc;
 init_fail:
+	kfree(mdp5_data->frc_fsm);
+init_fail1:
 	kfree(mdp5_data);
 	return rc;
 }

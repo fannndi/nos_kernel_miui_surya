@@ -1030,6 +1030,14 @@ static int dfc_update_fc_map(struct net_device *dev, struct qos_info *qos,
 			itm->bytes_in_flight = 0;
 		}
 
+		/* Adjuste grant for query */
+		if (dfc_qmap && is_query) {
+			adjusted_grant = dfc_adjust_grant(itm, fc_info);
+		} else {
+			adjusted_grant = fc_info->num_bytes;
+			itm->bytes_in_flight = 0;
+		}
+
 		if ((itm->grant_size == 0 && adjusted_grant > 0) ||
 		    (itm->grant_size > 0 && adjusted_grant == 0))
 			action = true;

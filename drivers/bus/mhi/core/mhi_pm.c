@@ -765,7 +765,7 @@ int mhi_debugfs_trigger_reset(void *data, u64 val)
 	write_unlock_irq(&mhi_cntrl->pm_lock);
 
 	if (cur_state == MHI_PM_SYS_ERR_DETECT)
-		mhi_process_sys_err(mhi_cntrl);
+	mhi_process_sys_err(mhi_cntrl);
 
 	return 0;
 }

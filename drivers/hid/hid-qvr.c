@@ -112,6 +112,7 @@ struct qvr_external_sensor {
 
 static DECLARE_WAIT_QUEUE_HEAD(wq);
 static struct qvr_external_sensor qvr_external_sensor;
+static uint8_t DEBUG_ORIENTATION;
 
 static int read_calibration_len(void)
 {
@@ -287,7 +288,7 @@ static int qvr_send_package_wrap(u8 *message, int msize, struct hid_device *hid)
 	if (!sensor->ts_offset)
 		sensor->ts_offset = imuData.gts0;
 	index_buf = (struct qvr_buf_index *)((uintptr_t)sensor->vaddr +
-		(sensor->vsize / 2));
+		(sensor->vsize / 2) + (8 * sizeof(*sensor_buf)));
 	sensor_buf = (struct qvr_sensor_t *)((uintptr_t)sensor->vaddr +
 		(sensor->vsize / 2) + sizeof(struct qvr_buf_index));
 

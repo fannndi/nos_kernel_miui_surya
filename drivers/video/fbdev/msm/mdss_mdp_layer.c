@@ -1806,6 +1806,40 @@ end:
 }
 
 /*
+ * __is_sd_state_valid() - validate secure display state
+ *
+ * This function checks if the current state of secrure display is valid,
+ * based on the new settings.
+ * For command mode panels, the sd state would be invalid if a non secure pipe
+ * comes and one of the below condition is met:
+ *	1) Secure Display is enabled for current client, and there is other
+	secure client.
+ *	2) Secure Display is disabled for current client, and there is other
+	secure client.
+ *	3) Secure pipes are already staged for the current client.
+ * For other panels, the sd state would be invalid if a non secure pipe comes
+ * and one of the below condition is met:
+ *	1) Secure Display is enabled for current or other client.
+ *	2) Secure pipes are already staged for the current client.
+ *
+ */
+static inline bool __is_sd_state_valid(uint32_t sd_pipes, uint32_t nonsd_pipes,
+	int panel_type, u32 sd_enabled)
+{
+	if (panel_type == MIPI_CMD_PANEL) {
+		if ((((mdss_get_sd_client_cnt() > 1) && sd_enabled) ||
+			(mdss_get_sd_client_cnt() && !sd_enabled) ||
+			sd_pipes)
+			&& nonsd_pipes)
+			return false;
+	} else {
+		if ((sd_pipes || mdss_get_sd_client_cnt()) && nonsd_pipes)
+			return false;
+	}
+	return true;
+}
+
+/*
  * __validate_secure_session() - validate various secure sessions
  *
  * This function travers through used pipe list and checks if any pipe
@@ -2845,7 +2879,8 @@ int mdss_mdp_layer_pre_commit(struct msm_fb_data_type *mfd,
 	/* handle null commit */
 	if (!layer_count) {
 		__handle_free_list(mdp5_data, NULL, layer_count);
-		return 0;
+		/* Check for secure state transition. */
+		return __validate_secure_session(mdp5_data);
 	}
 
 	validate_info_list = kcalloc(layer_count, sizeof(*validate_info_list),
@@ -2914,11 +2949,17 @@ int mdss_mdp_layer_pre_commit(struct msm_fb_data_type *mfd,
 	}
 	mutex_unlock(&mdp5_data->list_lock);
 
+	ret = mdss_mdp_overlay_start(mfd);
+
+	if (commit->frc_info)
+		__parse_frc_info(mdp5_data, commit->frc_info);
+
 	ret = __handle_buffer_fences(mfd, commit, layer_list);
-	if (ret) {
-		pr_err("failed to handle fences for fb: %d", mfd->index);
+		if (ret) {
+		pr_err("unable to start overlay %d (%d)\n", mfd->index, ret);
 		goto map_err;
 	}
+
 map_err:
 	if (ret) {
 		mutex_lock(&mdp5_data->list_lock);

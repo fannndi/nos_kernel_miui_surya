@@ -1012,9 +1012,11 @@ static int geni_i2c_probe(struct platform_device *pdev)
 	if (of_property_read_u32_array(pdev->dev.of_node, "qcom,clk-cfg",
 		geni_i2c_clk_map_dt, 5)) {
 		if (of_property_read_u32(pdev->dev.of_node, "qcom,clk-freq-out",
-				&gi2c->i2c_rsc.clk_freq_out))
+				&gi2c->i2c_rsc.clk_freq_out)) {
+			dev_info(&pdev->dev,
+				"Bus frequency not specified, default to 400KHz.\n");
 			gi2c->i2c_rsc.clk_freq_out = KHz(400);
-
+		}
 		ret = geni_i2c_clk_map_idx(gi2c);
 		if (ret) {
 			dev_err(gi2c->dev, "Invalid clk frequency %d KHz: %d\n",

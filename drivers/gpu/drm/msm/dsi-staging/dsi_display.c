@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
- *
+ * Copyright (C) 2020 XiaoMi, Inc.
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
@@ -6818,6 +6818,8 @@ int dsi_display_get_modes(struct dsi_display *display,
 
 	dyn_clk_caps = &(display->panel->dyn_clk_caps);
 
+	num_dfps_rates = !dfps_caps.dfps_support ? 1 : dfps_caps.dfps_list_len;
+
 	timing_mode_count = display->panel->num_timing_nodes;
 
 	for (mode_idx = 0; mode_idx < timing_mode_count; mode_idx++) {
@@ -6837,7 +6839,6 @@ int dsi_display_get_modes(struct dsi_display *display,
 				   display->name, mode_idx);
 			goto error;
 		}
-
 		is_cmd_mode = (display_mode.panel_mode == DSI_OP_CMD_MODE);
 
 		num_dfps_rates = ((!dfps_caps.dfps_support ||

@@ -883,6 +883,7 @@ static void mhi_sm_dev_event_manager(struct work_struct *work)
 		res = mhi_sm_prepare_suspend(MHI_DEV_M2_STATE);
 		if (res)
 			MHI_SM_ERR("Failed switching to M3 state\n");
+		mhi_dev_pm_relax();
 		break;
 	case MHI_DEV_EVENT_M3_STATE:
 		res = mhi_sm_prepare_suspend(MHI_DEV_M3_STATE);

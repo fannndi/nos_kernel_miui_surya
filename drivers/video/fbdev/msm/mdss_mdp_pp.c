@@ -1731,8 +1731,43 @@ int mdss_mdp_qseed3_setup(struct mdp_scale_data_v2 *scaler,
 		struct mdss_mdp_format_params *fmt)
 {
 	int rc = 0;
+	struct mdp_scale_data_v2 *scaler;
+	struct mdss_data_type *mdata;
+	char __iomem *offset, *lut_offset;
+	struct mdss_mdp_format_params *fmt;
 	uint32_t op_mode = 0;
 	uint32_t phase_init, preload, src_y_rgb, src_uv, dst;
+
+	mdata = mdss_mdp_get_mdata();
+	/* SRC pipe QSEED3 Configuration */
+	if (location == SSPP_VIG) {
+		scaler = &pipe->scaler;
+		offset = pipe->base + mdata->scaler_off->vig_scaler_off;
+		lut_offset = pipe->base + mdata->scaler_off->vig_scaler_lut_off;
+		fmt = pipe->src_fmt;
+	}  else if (location == DSPP) {
+		/* Destination scaler QSEED3 Configuration */
+		if ((mdata->scaler_off->has_dest_scaler) &&
+				(id < mdata->scaler_off->ndest_scalers)) {
+			/* TODO :point to the destination params */
+			scaler = NULL;
+			offset = mdata->scaler_off->dest_base +
+				mdata->scaler_off->dest_scaler_off[id];
+			lut_offset = mdata->scaler_off->dest_base +
+				mdata->scaler_off->dest_scaler_lut_off[id];
+			/*TODO : set pixel fmt to RGB101010 */
+			return -ENOTSUPP;
+		} else {
+			return -EINVAL;
+		}
+	} else {
+		return -EINVAL;
+	}
+
+	if (!scaler) {
+		pr_debug("scaler pointer is NULL\n");
+		return 0;
+	}
 
 	pr_debug("scaler->enable=%d", scaler->enable);
 
@@ -2506,8 +2541,8 @@ static int pp_dspp_setup(u32 disp_num, struct mdss_mdp_mixer *mixer,
 				&mdss_pp_res->dither_disp_cfg[disp_num]);
 		} else {
 			addr = base + MDSS_MDP_REG_DSPP_DITHER_DEPTH;
-			pp_ops[DITHER].pp_set_config(addr, pp_sts,
-			      &mdss_pp_res->dither_disp_cfg[disp_num], DSPP);
+				pp_ops[DITHER].pp_set_config(addr, pp_sts,
+				&mdss_pp_res->dither_disp_cfg[disp_num], DSPP);
 		}
 	}
 	if ((flags & PP_FLAGS_DIRTY_GAMUT) &&
@@ -2596,7 +2631,7 @@ static int pp_dspp_setup(u32 disp_num, struct mdss_mdp_mixer *mixer,
 	else
 		ctl->flush_bits |= BIT(13 + dspp_num);
 
-	wmb();
+	wmb(); /* ensure write is finished before progressing */
 
 	*op_mode = opmode;
 

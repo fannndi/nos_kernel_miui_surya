@@ -3358,9 +3358,29 @@ static int syna_tcm_probe(struct platform_device *pdev)
 
 	retval = synaptics_tcm_pinctrl_init(tcm_hcd);
 	if (retval < 0) {
-		LOGE(tcm_hcd->pdev->dev.parent, "Failed to init pinctrl\n");
-		goto err_pinctrl_init;
+		LOGE(tcm_hcd->pdev->dev.parent,
+				"Failed to enable regulators\n");
+		goto err_enable_regulator;
 	}
+
+	retval = syna_tcm_config_gpio(tcm_hcd);
+	if (retval < 0) {
+		LOGE(tcm_hcd->pdev->dev.parent,
+				"Failed to configure GPIO's\n");
+		goto err_config_gpio;
+	}
+
+	retval = synaptics_tcm_pinctrl_init(tcm_hcd);
+		if (!retval && tcm_hcd->ts_pinctrl) {
+			retval = pinctrl_select_state(
+					tcm_hcd->ts_pinctrl,
+					tcm_hcd->pinctrl_state_active);
+			if (retval < 0) {
+				LOGE(tcm_hcd->pdev->dev.parent,
+					"%s: Failed to select %s pinstate %d\n",
+					__func__, PINCTRL_STATE_ACTIVE, retval);
+			}
+		}
 
 	sysfs_dir = kobject_create_and_add(PLATFORM_DRIVER_NAME,
 			&pdev->dev.kobj);

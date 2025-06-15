@@ -2622,7 +2622,6 @@ static void __gsi_read_wdi3_channel_scratch2_reg(unsigned long chan_hdl,
 
 }
 
-
 static union gsi_channel_scratch __gsi_update_mhi_channel_scratch(
 	unsigned long chan_hdl, struct gsi_mhi_channel_scratch mscr)
 {

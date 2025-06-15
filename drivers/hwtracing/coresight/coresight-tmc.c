@@ -449,6 +449,7 @@ static ssize_t pcie_path_store(struct device *dev,
 {
 	struct tmc_drvdata *drvdata = dev_get_drvdata(dev->parent);
 	char str[10] = "";
+	int ret;
 
 	if (strlen(buf) >= 10)
 		return -EINVAL;

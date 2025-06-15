@@ -19,6 +19,10 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/etherdevice.h>
+#include <linux/bitops.h>
+#include <linux/io.h>
+#include <linux/debugfs.h>
 #include <net/cnss_utils.h>
 
 #ifdef CONFIG_CNSS_TIMESYNC
@@ -31,7 +35,7 @@
 #define LPASS_PMU_INT_EN0 0xC060084
 #define LPASS_PMU_INT_CLR 0xC060034
 #endif
-#define CNSS_MAX_CH_NUM 157
+#define CNSS_MAX_CH_NUM 45
 struct cnss_unsafe_channel_list {
 	u16 unsafe_ch_count;
 	u16 unsafe_ch_list[CNSS_MAX_CH_NUM];

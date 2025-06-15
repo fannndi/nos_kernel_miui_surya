@@ -71,6 +71,12 @@
 			label = "peripheral2_mem";
 		};
 
+		ipa_fw_mem: ipa_fw_region@8fced000 {
+			no-map;
+			reg = <0x8fced000 0x10000>;
+			label = "ipa_fw_mem";
+		};
+
 		secdata_mem: secdata_region@8fcfd000 {
 			no-map;
 			reg = <0x8fcfd000 0x1000>;
@@ -1610,9 +1616,9 @@
 
 	sdx_ext_ipc: qcom,sdx_ext_ipc {
 		compatible = "qcom,sdx-ext-ipc";
-		qcom,status-in-gpio = <&tlmm 64 0x00>;
-		qcom,status-out-gpio = <&tlmm 63 0x00>;
-		qcom,status-out2-gpio = <&tlmm 66 0x00>;
+		qcom,ap2mdm-status-gpio = <&tlmm 64 0x00>;
+		qcom,mdm2ap-status-gpio = <&tlmm 63 0x00>;
+		qcom,mdm2ap-status2-gpio = <&tlmm 66 0x00>;
 		status = "disabled";
 	};
 };

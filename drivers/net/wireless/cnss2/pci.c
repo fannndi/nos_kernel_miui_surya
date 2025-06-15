@@ -851,22 +851,26 @@ static int cnss_qca6174_ramdump(struct cnss_pci_data *pci_priv)
 static int cnss_pci_force_wake_get(struct cnss_pci_data *pci_priv)
 {
 	struct device *dev = &pci_priv->pci_dev->dev;
+	u32 timeout = 0;
 	int ret;
 
-	ret = cnss_pci_force_wake_request_sync(dev,
-					       FORCE_WAKE_DELAY_TIMEOUT_US);
+	ret = cnss_pci_force_wake_request(dev);
 	if (ret) {
-		if (ret != -EAGAIN)
-			cnss_pr_err("Failed to request force wake\n");
+		cnss_pr_err("Failed to request force wake\n");
 		return ret;
 	}
 
-	/* If device's M1 state-change event races here, it can be ignored,
-	 * as the device is expected to immediately move from M2 to M0
-	 * without entering low power state.
-	 */
-	if (cnss_pci_is_device_awake(dev) != true)
-		cnss_pr_warn("MHI not in M0, while reg still accessible\n");
+	while (!cnss_pci_is_device_awake(dev) &&
+	       timeout <= FORCE_WAKE_DELAY_TIMEOUT_US) {
+		usleep_range(FORCE_WAKE_DELAY_MIN_US, FORCE_WAKE_DELAY_MAX_US);
+		timeout += FORCE_WAKE_DELAY_MAX_US;
+	}
+
+	if (cnss_pci_is_device_awake(dev) != true) {
+		cnss_pr_err("Timed out to request force wake\n");
+		cnss_pci_force_wake_release(dev);
+		return -ETIMEDOUT;
+	}
 
 	return 0;
 }
@@ -1057,6 +1061,12 @@ static int cnss_qca6290_shutdown(struct cnss_pci_data *pci_priv)
 		cnss_pr_err("Failed to suspend PCI link, err = %d\n", ret);
 
 	cnss_power_off_device(plat_priv);
+
+	if (test_bit(CNSS_DRIVER_RECOVERY, &plat_priv->driver_state)) {
+		cnss_pr_dbg("recovery sleep start\n");
+		msleep(200);
+		cnss_pr_dbg("recovery sleep 200ms done\n");
+	}
 
 	pci_priv->remap_window = 0;
 
@@ -2232,6 +2242,34 @@ void cnss_pci_fw_boot_timeout_hdlr(struct cnss_pci_data *pci_priv)
 			       CNSS_REASON_TIMEOUT);
 }
 
+int cnss_pci_get_iova(struct cnss_pci_data *pci_priv, u64 *addr, u64 *size)
+{
+	if (!pci_priv)
+		return -ENODEV;
+
+	if (!pci_priv->smmu_iova_len)
+		return -EINVAL;
+
+	*addr = pci_priv->smmu_iova_start;
+	*size = pci_priv->smmu_iova_len;
+
+	return 0;
+}
+
+int cnss_pci_get_iova_ipa(struct cnss_pci_data *pci_priv, u64 *addr, u64 *size)
+{
+	if (!pci_priv)
+		return -ENODEV;
+
+	if (!pci_priv->smmu_iova_ipa_len)
+		return -EINVAL;
+
+	*addr = pci_priv->smmu_iova_ipa_start;
+	*size = pci_priv->smmu_iova_ipa_len;
+
+	return 0;
+}
+
 struct dma_iommu_mapping *cnss_smmu_get_mapping(struct device *dev)
 {
 	struct cnss_pci_data *pci_priv = cnss_get_pci_priv(to_pci_dev(dev));
@@ -2992,8 +3030,9 @@ static int cnss_pci_register_mhi(struct cnss_pci_data *pci_priv)
 		mhi_ctrl->iova_stop = pci_priv->smmu_iova_start +
 					pci_priv->smmu_iova_len;
 	} else {
+		/* assume all addresses are valid */
 		mhi_ctrl->iova_start = 0;
-		mhi_ctrl->iova_stop = 0;
+		mhi_ctrl->iova_stop = (dma_addr_t)U64_MAX;
 	}
 
 	mhi_ctrl->link_status = cnss_mhi_link_status;

@@ -523,7 +523,7 @@ static int ipa_eth_uc_ready_cb(struct notifier_block *nb,
 	set_bit(IPA_ETH_ST_UC_READY, &ipa_eth_state);
 	ipa_eth_global_refresh_sched();
 
-	return NOTIFY_OK;
+	return rc;
 }
 
 static struct notifier_block uc_ready_cb = {

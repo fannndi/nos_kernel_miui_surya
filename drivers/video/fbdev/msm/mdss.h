@@ -237,7 +237,8 @@ struct mdss_smmu_client {
 	bool domain_attached;
 	bool domain_reattach;
 	bool handoff_pending;
-	void __iomem *mmu_base;
+	char __iomem *mmu_base;
+	int domain;
 	struct list_head _client;
 };
 
@@ -557,6 +558,10 @@ struct mdss_data_type {
 	wait_queue_head_t secure_waitq;
 	struct cx_ipeak_client *mdss_cx_ipeak;
 	struct mult_factor bus_throughput_factor;
+	u32 sec_disp_en;
+	u32 sec_cam_en;
+	u32 sec_session_cnt;
+	wait_queue_head_t secure_waitq;
 };
 
 extern struct mdss_data_type *mdss_res;

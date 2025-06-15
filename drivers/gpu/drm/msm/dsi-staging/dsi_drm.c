@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
- *
+ * Copyright (C) 2020 XiaoMi, Inc.
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
@@ -452,13 +452,17 @@ static void dsi_bridge_disable(struct drm_bridge *bridge)
 	}
 	display = c_bridge->display;
 
-	private_flags =
-		bridge->encoder->crtc->state->adjusted_mode.private_flags;
-
 	if (display && display->drm_conn) {
-		display->poms_pending =
-			private_flags & MSM_MODE_FLAG_SEAMLESS_POMS;
-		sde_connector_helper_bridge_disable(display->drm_conn);
+		if (bridge->encoder->crtc->state->adjusted_mode.private_flags &
+			MSM_MODE_FLAG_SEAMLESS_POMS) {
+			display->poms_pending = true;
+			/* Disable ESD thread, during panel mode switch */
+			sde_connector_schedule_status_work(display->drm_conn,
+				false);
+		} else {
+			display->poms_pending = false;
+			sde_connector_helper_bridge_disable(display->drm_conn);
+		}
 	}
 
 	rc = dsi_display_pre_disable(c_bridge->display);

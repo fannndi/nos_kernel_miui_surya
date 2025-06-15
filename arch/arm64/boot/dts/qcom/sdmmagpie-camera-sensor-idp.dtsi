@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
- *
+ * Copyright (C) 2020 XiaoMi, Inc.
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
@@ -43,6 +43,97 @@
 		switch-source = <&pm6150l_switch2 &pm6150l_switch2>;
 		status = "ok";
 	};
+
+	wide_ldo_avdd2_regulator: gpio-regulator@1 { //AVDD2 1.8V
+		compatible = "regulator-fixed";
+		reg = <0x01 0x00>;
+		regulator-name = "wide_ldo_avdd2_regulator";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		regulator-enable-ramp-delay = <100>;
+		enable-active-high;
+		gpio = <&pm6150l_gpios 4 0>;
+		vin-supply = <&pm6150l_bob>;//pm6150l_s8
+	};
+/*
+	wide_ldo_afvdd_regulator: gpio-regulator@2 { //AFVDD 2.8V
+		compatible = "regulator-fixed";
+		reg = <0x02 0x00>;
+		regulator-name = "wide_ldo_afvdd_regulator";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		regulator-enable-ramp-delay = <100>;
+		enable-active-high;
+		gpio = <&tlmm 66 0>;
+		vin-supply = <&pm6150l_bob>;
+	};
+*/
+	uw_ldo_ois_drv_regulator: gpio-regulator@2 { //drvVDD 2.8V
+		compatible = "regulator-fixed";
+		reg = <0x02 0x00>;
+		regulator-name = "uw_ldo_ois_drv_regulator";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		regulator-enable-ramp-delay = <100>;
+		enable-active-high;
+		gpio = <&tlmm 65 0>;
+		vin-supply = <&pm6150l_bob>;
+	};
+
+	camera_vdig: gpio-regulator@3 {
+		compatible = "regulator-fixed";
+		reg = <0x03 0x00>;
+		regulator-name = "camera_vdig";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		regulator-enable-ramp-delay = <233>;
+		enable-active-high;
+		gpio = <&pm6150l_gpios 12 0>;
+		//pinctrl-names = "default";
+		//pinctrl-0 = <&cam_sensor_vdig>;
+		vin-supply = <&pm6150l_bob>;
+	};
+
+	camera_mipi_switch_en: gpio-regulator@4 {
+		compatible = "regulator-fixed";
+		reg = <0x04 0x00>;
+		regulator-name = "camera_mipi_switch_en";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		regulator-enable-ramp-delay = <233>;
+		enable-active-high;
+		gpio = <&pm6150_gpios 2 0>;
+		//pinctrl-names = "default";
+		//pinctrl-0 = <&cam_mipi_switch_en>;
+		vin-supply = <&pm6150l_bob>;
+	};
+/*
+	camera_mipi_switch_sel: gpio-regulator@5 {
+		compatible = "regulator-fixed";
+		reg = <0x05 0x00>;
+		regulator-name = "camera_mipi_switch_sel";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		regulator-enable-ramp-delay = <233>;
+		enable-active-high;
+		gpio = <&pm6150_gpios 3 0>;
+		//pinctrl-names = "default";
+		//pinctrl-0 = <&cam_mipi_switch_sel>;
+		vin-supply = <&pm6150l_bob>;
+	};
+
+	tele_ldo_afvdd_regulator: gpio-regulator@5 { //AFVDD 2.8V
+		compatible = "regulator-fixed";
+		reg = <0x05 0x00>;
+		regulator-name = "tele_ldo_afvdd_regulator";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		regulator-enable-ramp-delay = <100>;
+		enable-active-high;
+		gpio = <&tlmm 88 0>;
+		vin-supply = <&pm6150l_bob>;
+	};
+*/
 
 	wide_ldo_avdd2_regulator: gpio-regulator@1 { //AVDD2 1.8V
 		compatible = "regulator-fixed";

@@ -830,7 +830,7 @@ struct __packed gsi_wdi2_channel_scratch_new {
 * gsi_mhip_channel_scratch - MHI PRIME protocol SW config area of
 * channel scratch
 * @assert_bit_40: Valid only for non-host channels.
-* Set to 1 for MHI’ channels when running over PCIe.
+* Set to 1 for MHIï¿½ channels when running over PCIe.
 * @host_channel: Set to 1 for MHIP channel running on host.
 *
 */
@@ -1430,18 +1430,6 @@ int gsi_write_channel_scratch3_reg(unsigned long chan_hdl,
  */
 int gsi_write_wdi3_channel_scratch2_reg(unsigned long chan_hdl,
 		union __packed gsi_wdi3_channel_scratch2_reg val);
-/**
- * gsi_write_channel_scratch2_reg - Peripheral should call this function to
- * write to the scratch2 reg area of the channel context
- *
- * @chan_hdl:  Client handle previously obtained from
- *             gsi_alloc_channel
- * @val:       Value to write
- *
- * @Return gsi_status
- */
-int gsi_write_channel_scratch2_reg(unsigned long chan_hdl,
-		union __packed gsi_wdi2_channel_scratch2_reg val);
 
 /**
  * gsi_read_channel_scratch - Peripheral should call this function to
@@ -1810,7 +1798,6 @@ int gsi_alloc_channel_ee(unsigned int chan_idx, unsigned int ee, int *code);
 
 
 int gsi_chk_intset_value(void);
-
 /**
  * gsi_enable_flow_control_ee - Peripheral should call this function
  * to enable flow control other EE's channel. This is usually done in USB
@@ -1858,7 +1845,6 @@ static inline int gsi_register_device(struct gsi_per_props *props,
 {
 	return -GSI_STATUS_UNSUPPORTED_OP;
 }
-
 static inline int gsi_is_mcs_enabled(void)
 {
 	return -GSI_STATUS_UNSUPPORTED_OP;

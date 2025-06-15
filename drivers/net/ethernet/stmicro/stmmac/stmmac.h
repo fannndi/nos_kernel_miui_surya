@@ -189,6 +189,34 @@ int ethqos_phy_intr_enable(struct stmmac_priv *priv);
 extern bool phy_intr_en;
 void qcom_ethqos_request_phy_wol(struct plat_stmmacenet_data *plat_dat);
 
+
+struct stmmac_emb_smmu_cb_ctx {
+	bool valid;
+	struct platform_device *pdev_master;
+	struct platform_device *smmu_pdev;
+	struct dma_iommu_mapping *mapping;
+	struct iommu_domain *iommu_domain;
+	u32 va_start;
+	u32 va_size;
+	u32 va_end;
+	int ret;
+};
+
+extern struct stmmac_emb_smmu_cb_ctx stmmac_emb_smmu_ctx;
+
+#define GET_MEM_PDEV_DEV (stmmac_emb_smmu_ctx.valid ? \
+			&stmmac_emb_smmu_ctx.smmu_pdev->dev : priv->device)
+
+#define MICREL_PHY_ID 0x00221620
+
+#define MMC_CONFIG 0x24
+
+int ethqos_handle_prv_ioctl(struct net_device *dev, struct ifreq *rq, int cmd);
+int ethqos_init_pps(struct stmmac_priv *priv);
+
+int ethqos_phy_intr_enable(struct stmmac_priv *priv);
+extern bool phy_intr_en;
+void qcom_ethqos_request_phy_wol(struct plat_stmmacenet_data *plat_dat);
 int stmmac_mdio_unregister(struct net_device *ndev);
 int stmmac_mdio_register(struct net_device *ndev);
 int stmmac_mdio_reset(struct mii_bus *mii);

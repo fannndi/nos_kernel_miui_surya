@@ -2769,6 +2769,10 @@ static int qcom_ethqos_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_clk;
 
+	if (!ethqos_phy_intr_config(ethqos))
+		ethqos_phy_intr_enable(ethqos);
+	else
+		ETHQOSERR("Phy interrupt configuration failed");
 	rgmii_dump(ethqos);
 
 	if (ethqos->emac_ver == EMAC_HW_v2_3_2) {

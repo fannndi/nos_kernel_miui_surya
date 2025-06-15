@@ -1,4 +1,8 @@
+<<<<<<<< HEAD:techpack/audio/asoc/codecs/aqt1000/aqt1000-utils.h
 /* Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
+========
+/* Copyright (c) 2019, The Linux Foundation. All rights reserved.
+>>>>>>>> xiaomi/surya-q-oss:arch/arm64/boot/dts/qcom/sdxprairie-cdp-v1.1-cpe.dts
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -10,6 +14,7 @@
  * GNU General Public License for more details.
  */
 
+<<<<<<<< HEAD:techpack/audio/asoc/codecs/aqt1000/aqt1000-utils.h
 #ifndef __WCD9XXX_UTILS_H__
 #define __WCD9XXX_UTILS_H__
 
@@ -20,3 +25,17 @@
 struct regmap *aqt1000_regmap_init(struct device *dev,
 				   const struct regmap_config *config);
 #endif
+========
+/dts-v1/;
+
+#include "sdxprairie-cdp-v1.1-cpe.dtsi"
+
+/ {
+	model = "Qualcomm Technologies, Inc. SDXPRAIRIE CDP (CPE-1.1)";
+	compatible = "qcom,sdxprairie-cdp",
+		"qcom,sdxprairie", "qcom,cdp";
+	qcom,board-id = <0x5010101 0x0>;
+};
+
+
+>>>>>>>> xiaomi/surya-q-oss:arch/arm64/boot/dts/qcom/sdxprairie-cdp-v1.1-cpe.dts

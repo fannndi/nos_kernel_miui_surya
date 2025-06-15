@@ -1729,6 +1729,16 @@ int geni_se_iommu_free_buf(struct device *wrapper_dev, dma_addr_t *iova,
 }
 EXPORT_SYMBOL(geni_se_iommu_free_buf);
 
+struct device *geni_get_iommu_dev(struct device *wrapper_dev)
+{
+	struct geni_se_device *geni_se_dev;
+
+	geni_se_dev = dev_get_drvdata(wrapper_dev);
+
+	return geni_se_dev->cb_dev;
+}
+EXPORT_SYMBOL(geni_get_iommu_dev);
+
 /**
  * geni_se_dump_dbg_regs() - Print relevant registers that capture most
  *			accurately the state of an SE.

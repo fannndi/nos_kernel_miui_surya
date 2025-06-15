@@ -2,7 +2,7 @@
  * drivers/base/power/wakeup.c - System wakeup events framework
  *
  * Copyright (c) 2010 Rafael J. Wysocki <rjw@sisk.pl>, Novell Inc.
- *
+ * Copyright (C) 2020 XiaoMi, Inc.
  * This file is released under the GPLv2.
  */
 
@@ -989,7 +989,7 @@ void pm_system_irq_wakeup(unsigned int irq_number)
 			pr_warn("%s: %d triggered %s\n", __func__,
 					irq_number, name);
 //2020.04.27 add longcheer fengxingqiang "recording wakeup reason"
-			log_irq_wakeup_reason(irq_number);
+			log_wakeup_reason(irq_number);
 
 		}
 		pm_wakeup_irq = irq_number;

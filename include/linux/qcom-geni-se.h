@@ -749,6 +749,16 @@ int geni_se_tx_dma_prep(struct device *wrapper_dev, void __iomem *base,
 void geni_se_rx_dma_start(void __iomem *base, int rx_len, dma_addr_t *rx_dma);
 
 /**
+ * geni_get_iommu_dev()	- Returns IOMMU device attached to QUP wrapper.
+ * @wrapper_dev		Pointer to QUP wrapper device.
+ *
+ * This functions returns IOMMU device attached to QUP wrapper node.
+ *
+ * Return		Pointer to IOMMU dev.
+ */
+struct device *geni_get_iommu_dev(struct device *wrapper_dev);
+
+/**
  * geni_se_rx_dma_prep() - Prepare the Serial Engine for RX DMA transfer
  * @wrapper_dev:	QUPv3 Wrapper Device to which the TX buffer is mapped.
  * @base:		Base address of the SE register block.
@@ -1065,6 +1075,10 @@ static void geni_se_dump_dbg_regs(struct se_geni_rsc *rsc, void __iomem *base,
 
 static void geni_se_rx_dma_start(void __iomem *base, int rx_len,
 						dma_addr_t *rx_dma)
+{
+}
+
+struct device *geni_get_iommu_dev(struct device *wrapper_dev)
 {
 }
 

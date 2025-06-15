@@ -16,6 +16,7 @@
 #include <crypto/aead.h>
 #include <linux/etherdevice.h>
 #include <linux/netdevice.h>
+#include <linux/netdevice.h>
 #include <linux/rtnetlink.h>
 #include <net/genetlink.h>
 #include <net/sock.h>
@@ -3539,8 +3540,11 @@ static int macsec_newlink(struct net *net, struct net_device *dev,
 			  struct netlink_ext_ack *extack)
 {
 	struct macsec_dev *macsec = macsec_priv(dev);
+	struct net_device *real_dev;
 	struct macsec_context ctx;
 	const struct macsec_ops *ops;
+	int err;
+	sci_t sci;
 	u8 icv_len = DEFAULT_ICV_LEN;
 	rx_handler_func_t *rx_handler;
 	u8 icv_len = DEFAULT_ICV_LEN;

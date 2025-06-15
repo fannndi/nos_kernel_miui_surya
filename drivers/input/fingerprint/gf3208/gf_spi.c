@@ -1,7 +1,7 @@
 /*
  * TEE driver for goodix fingerprint sensor
  * Copyright (C) 2016 Goodix
- *
+ * Copyright (C) 2020 XiaoMi, Inc.
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -395,9 +395,41 @@ static void irq_cleanup(struct gf_dev *gf_dev)
 	free_irq(gf_dev->irq, gf_dev);
 }
 
+static void gf_kernel_key_input(struct gf_dev *gf_dev, struct gf_key *gf_key)
+{
+	uint32_t key_input = 0;
+
+	if (gf_key->key == GF_KEY_HOME) {
+		key_input = KEY_KPENTER;
+	} else if (gf_key->key == GF_KEY_POWER) {
+		key_input = KEY_KPENTER;
+	} else if (gf_key->key == GF_KEY_CAMERA) {
+		key_input = GF_KEY_INPUT_CAMERA;
+	} else {
+		/* add special key define */
+		key_input = gf_key->key;
+	}
+	pr_info("%s: received key event[%d], key=%d, value=%d\n",
+			__func__, key_input, gf_key->key, gf_key->value);
+
+	if ((GF_KEY_POWER == gf_key->key || GF_KEY_CAMERA == gf_key->key)
+			&& (gf_key->value == 1)) {
+		input_report_key(gf_dev->input, key_input, 1);
+		input_sync(gf_dev->input);
+		input_report_key(gf_dev->input, key_input, 0);
+		input_sync(gf_dev->input);
+	}
+
+	if (gf_key->key == GF_KEY_HOME) {
+		input_report_key(gf_dev->input, key_input, gf_key->value);
+		input_sync(gf_dev->input);
+	}
+}
+
 static long gf_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct gf_dev *gf_dev = &gf;
+	struct gf_key gf_key;
 #if defined(SUPPORT_NAV_EVENT)
 	gf_nav_event_t nav_event = GF_NAV_NONE;
 #endif
@@ -442,6 +474,16 @@ static long gf_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case GF_IOC_RESET:
 		pr_debug("%s GF_IOC_RESET\n", __func__);
 		gf_hw_reset(gf_dev, 3);
+		break;
+
+	case GF_IOC_INPUT_KEY_EVENT:
+		if (copy_from_user(&gf_key, (void __user *)arg, sizeof(struct gf_key))) {
+			pr_err("failed to copy input key event from user to kernel\n");
+			retval = -EFAULT;
+			break;
+		}
+
+		gf_kernel_key_input(gf_dev, &gf_key);
 		break;
 
 #if defined(SUPPORT_NAV_EVENT)
@@ -588,16 +630,16 @@ err_parse_dt:
 	return status;
 }
 
-static int proc_show_ver(struct seq_file *file,void *v)
+static int proc_show_ver(struct seq_file *file, void *v)
 {
-	seq_printf(file,"Fingerprint: Goodix\n");
+	seq_printf(file, "Fingerprint: Goodix\n");
 	return 0;
 }
 
-static int proc_open(struct inode *inode,struct file *file)
+static int proc_open(struct inode *inode, struct file *file)
 {
 	pr_info("gf3258 proc_opening\n");
-	single_open(file,proc_show_ver,NULL);
+	single_open(file, proc_show_ver, NULL);
 	return 0;
 }
 
@@ -856,7 +898,7 @@ static int gf_remove(struct platform_device *pdev)
 	list_del(&gf_dev->device_entry);
 	device_destroy(gf_class, gf_dev->devt);
 	clear_bit(MINOR(gf_dev->devt), minors);
-	remove_proc_entry(PROC_NAME,NULL);
+	remove_proc_entry(PROC_NAME, NULL);
 	mutex_unlock(&device_list_lock);
 
 	return 0;

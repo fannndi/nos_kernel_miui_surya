@@ -49,6 +49,8 @@ static void atl_start_link(struct atl_nic *nic)
 	hw->mcp.ops->set_link(hw, true);
 	set_bit(ATL_ST_UPDATE_LINK, &hw->state);
 	atl_schedule_work(nic);
+	set_bit(ATL_ST_UPDATE_LINK, &hw->state);
+	atl_schedule_work(nic);
 }
 
 static void atl_stop_link(struct atl_nic *nic)
@@ -67,6 +69,7 @@ static void atl_stop_link(struct atl_nic *nic)
 static int atl_start(struct atl_nic *nic)
 {
 	int ret = 0;
+
 
 	atl_start_hw_global(nic);
 	atl_set_rx_mode(nic->ndev);

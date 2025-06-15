@@ -1,5 +1,5 @@
 /* Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
- *
+ * Copyright (C) 2020 XiaoMi, Inc.
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
@@ -48,6 +48,17 @@ static const struct of_device_id msm_match_table[] = {
 
 MODULE_DEVICE_TABLE(of, msm_match_table);
 
+#define DEV_COUNT	1
+#define DEVICE_NAME	"nq-nci"
+#define CLASS_NAME	"nqx"
+#define MAX_BUFFER_SIZE			(320)
+#define WAKEUP_SRC_TIMEOUT		(2000)
+#define MAX_RETRY_COUNT			3
+#define NCI_RESET_CMD_LEN		4
+#define NCI_RESET_RSP_LEN		4
+#define NCI_RESET_NTF_LEN		13
+#define NCI_GET_VERSION_CMD_LEN		8
+#define NCI_GET_VERSION_RSP_LEN		12
 #define LQ_DEBUG_NFC    1
 #define CHECK_NFC_NONE_NFC 1
 #ifdef CHECK_NFC_NONE_NFC
@@ -933,7 +944,9 @@ err_nfcc_hw_info:
 static int nfcc_hw_check(struct i2c_client *client, struct nqx_dev *nqx_dev)
 {
 	int ret = 0;
-	int i = 0;
+    int i = 0;
+	int gpio_retry_count = 0;
+	unsigned char reset_ntf_len = 0;
 	unsigned int enable_gpio = nqx_dev->en_gpio;
 	char *nci_reset_cmd = NULL;
 	char *nci_reset_rsp = NULL;
@@ -1068,8 +1081,9 @@ static int nfcc_hw_check(struct i2c_client *client, struct nqx_dev *nqx_dev)
 	dev_err(&client->dev,
     		"LQ_DEBUG_nfc:%s: - i2c_master_send core reset Successful.\n", __func__);
     #endif
-	ret = is_data_available_for_read(nqx_dev);
-	if (ret <= 0) {
+	nqx_enable_irq(nqx_dev);
+	ret = wait_event_interruptible(nqx_dev->read_wq, !nqx_dev->irq_enabled);
+	if (ret < 0) {
 		nqx_disable_irq(nqx_dev);
 		goto err_nfcc_hw_check;
 	}
@@ -1114,6 +1128,18 @@ static int nfcc_hw_check(struct i2c_client *client, struct nqx_dev *nqx_dev)
             		"LQ_DEBUG_nfc:%s: nci_reset_ntf[%d] = %.2x \n", __func__, i, nci_reset_ntf[i]);
         #endif
         goto nfc_i2c_check_successful;
+	}
+
+	reset_ntf_len = 2 + nci_reset_ntf[2]; /*payload + len*/
+	if (reset_ntf_len > PAYLOAD_HEADER_LENGTH) {
+		nqx_dev->nqx_info.info.chip_type =
+				nci_reset_ntf[reset_ntf_len - 3];
+		nqx_dev->nqx_info.info.rom_version =
+				nci_reset_ntf[reset_ntf_len - 2];
+		nqx_dev->nqx_info.info.fw_major =
+				nci_reset_ntf[reset_ntf_len - 1];
+		nqx_dev->nqx_info.info.fw_minor =
+				nci_reset_ntf[reset_ntf_len];
 	}
 
 	dev_dbg(&client->dev,

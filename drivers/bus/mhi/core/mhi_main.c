@@ -2608,8 +2608,10 @@ int mhi_get_remote_time_sync(struct mhi_device *mhi_dev,
 
 	/* disable link level low power modes */
 	ret = mhi_cntrl->lpm_disable(mhi_cntrl, mhi_cntrl->priv_data);
-	if (ret)
+	if (ret) {
+		read_lock_bh(&mhi_cntrl->pm_lock);
 		goto error_invalid_state;
+	}
 
 	/*
 	 * time critical code to fetch device times,
@@ -2737,7 +2739,6 @@ int mhi_get_remote_time(struct mhi_device *mhi_dev,
 	MHI_VERB("time DB request with seq:0x%llx\n", mhi_tsync->int_sequence);
 
 	mhi_tsync->db_response_pending = true;
-	init_completion(&mhi_tsync->db_completion);
 
 skip_tsync_db:
 	spin_lock(&mhi_tsync->lock);

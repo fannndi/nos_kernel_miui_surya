@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2015-2020, The Linux Foundation.All rights reserved.
- *
+ * Copyright (C) 2020 XiaoMi, Inc.
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
@@ -285,6 +285,7 @@ struct dsi_display {
 };
 
 static struct dsi_display *whitep_display;
+
 //Update /proc/tp_info & /proc/tp_lockdown_info node
 extern void update_lct_tp_info(char *tp_info_buf, char *tp_lockdown_info_buf);
 //Set tp_lockdown_info node callback funcation

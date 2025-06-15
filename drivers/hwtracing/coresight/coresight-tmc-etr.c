@@ -1670,9 +1670,13 @@ out:
 	if (free_buf)
 		tmc_etr_free_sysfs_buf(free_buf);
 
-	if (!ret) {
-		if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM)
-			tmc_etr_byte_cntr_start(drvdata->byte_cntr);
+	if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM)
+		tmc_etr_byte_cntr_start(drvdata->byte_cntr);
+
+	if (drvdata->out_mode == TMC_ETR_OUT_MODE_PCIE)
+		etr_pcie_start(drvdata->byte_cntr);
+
+	mutex_unlock(&drvdata->mem_lock);
 
 		if (drvdata->out_mode == TMC_ETR_OUT_MODE_PCIE
 			&& drvdata->pcie_path == TMC_ETR_PCIE_SW_PATH)
@@ -2181,6 +2185,7 @@ static int tmc_disable_etr_sink(struct coresight_device *csdev)
 
 		coresight_cti_unmap_trigin(drvdata->cti_reset, 2, 0);
 		coresight_cti_unmap_trigout(drvdata->cti_flush, 3, 0);
+		tmc_etr_free_mem(drvdata);
 	}
 out:
 	mutex_unlock(&drvdata->mem_lock);
